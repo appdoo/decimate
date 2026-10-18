@@ -1,0 +1,5 @@
+# index 0 is invalid in 1-based OBJ (0-1 == -1) (R2 fixture)
+v 0 0 0
+v 1 0 0
+v 0 1 0
+f 0 1 2

@@ -1,0 +1,73 @@
+# Visual Studio build output
+Release/
+Debug/
+
+# Compiled objects / intermediates
+*.obj
+!tests/fixtures/*.obj
+*.o
+*.idb
+*.pch
+*.ilk
+*.pdb
+*.exp
+*.lib.recipe
+
+# Visual Studio caches / user state (large, machine-specific)
+*.ncb
+*.opt
+*.suo
+*.plg
+*.user
+*.aps
+
+# Legacy Visual SourceSafe bindings
+*.scc
+vssver.scc
+mssccprj.scc
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Modern build dirs (for later phases)
+/build/
+/build-rel/
+/cmake-build-*/
+
+# Session telemetry (hook-generated, local only)
+tasks/session-friction.log
+/build-verify/
+legacy/Debug/
+legacy/Release/
+/.cache/
+
+# 3D test models — external assets (Stanford bunny/armadillo/dragon, etc.),
+# NOT part of this project's license. Restricted/unknown-license meshes (Stanford
+# bunny/armadillo/dragon = non-commercial; cow/horse = no explicit grant) are NOT
+# tracked — fetch them with tools/fetch_models.sh. Only the CC0 spot model and the
+# README are committed (see model/README.md for per-model license + provenance).
+model/*
+!model/spot.obj
+!model/README.md
+
+# legacy2003/ — keep the 2003 source + VS project files (.vcproj/.sln/.dsp) as a
+# historical build reference; exclude the binary lib, IDE caches, SourceSafe
+# bindings, and build output dirs (these are also covered by the patterns above).
+legacy2003/glut32.lib
+legacy2003/*.vsd
+legacy2003/*.vspscc
+legacy2003/*.vssscc
+
+# not published
+diploma_tex/
+.claude/settings.local.json
+
+# Agent harness (local only, never public)
+/.claude/
+/CLAUDE.md
+/MICROSPECS.md
+/specs/
+/tasks/
+/paper2026/
+/tex2026/

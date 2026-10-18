@@ -1,0 +1,11 @@
+evaluate_t hit=1 t=1
+evaluate_t_parallel hit=0 t=0
+intersect_triangle_interior hit=1 t=1 u=0.25 v=0.25
+intersect_triangle_outside hit=0 t=0 u=2 v=0
+intersect_triangle_parallel hit=0 t=0 u=0 v=0
+intersect_triangle_behind hit=1 t=-1 u=0.25 v=0.25
+intersect_triangle_bfc_backface hit=0 t=0 u=0 v=0
+intersect_triangle_bfc_front hit=1 t=1 u=0.25 v=0.25
+IntersectTriangle_interior hit=1 t=1 u=0.25 v=0.25
+barycentricBadouelf_interior hit=1 alpha=0.25 beta=0.25
+barycentricBadouelf_outside hit=0 alpha=2 beta=0

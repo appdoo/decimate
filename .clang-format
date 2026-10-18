@@ -1,0 +1,81 @@
+# mesh-toolkit clang-format configuration
+# Base: LLVM style with C++20 target.
+# Applied on every Write/Edit via the PostToolUse hook — keep this sane and standard.
+---
+Language:        Cpp
+BasedOnStyle:    LLVM
+
+# C++20
+Standard:        c++20
+
+# Indentation
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ContinuationIndentWidth: 4
+
+# Columns
+ColumnLimit:     100
+
+# Brace wrapping — Attach style (K&R-derived, consistent with LLVM)
+BreakBeforeBraces: Attach
+
+# One-liner bodies are NOT permitted; aligns with readability-braces-around-statements
+AllowShortBlocksOnASingleLine:      Never
+AllowShortFunctionsOnASingleLine:   None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine:       false
+AllowShortLambdasOnASingleLine:     Inline
+
+# Includes
+SortIncludes:    CaseSensitive
+IncludeBlocks:   Regroup
+IncludeCategories:
+  # Project headers first, then system
+  - Regex:    '^"'
+    Priority: 1
+  - Regex:    '^<'
+    Priority: 2
+
+# Spacing
+SpaceBeforeParens:          ControlStatements
+SpaceAfterTemplateKeyword:  false
+SpacesInAngles:             Never
+SpacesInParentheses:        false
+SpaceInEmptyParentheses:    false
+SpaceBeforeRangeBasedForLoopColon: true
+
+# Pointer/reference alignment — left (int* p, not int *p)
+PointerAlignment:  Left
+ReferenceAlignment: Left
+
+# Trailing commas in initializer lists — easier diffs
+InsertTrailingCommas: None
+
+# Comments
+ReflowComments: true
+SpacesBeforeTrailingComments: 2
+
+# Penalties (prevent aggressive line-breaking of short expressions)
+PenaltyBreakAssignment:              2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment:                 300
+PenaltyBreakFirstLessLess:          120
+PenaltyBreakString:                  1000
+PenaltyExcessCharacter:              1000000
+PenaltyReturnTypeOnItsOwnLine:       60
+
+# Namespace indentation
+NamespaceIndentation: None
+CompactNamespaces:    false
+
+# Constructors
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers:  BinPack
+
+# Template parameters
+AlwaysBreakTemplateDeclarations: Yes
+
+# Empty lines
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false

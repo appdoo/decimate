@@ -1,0 +1,5 @@
+# out-of-range face index (R2 fixture): 3 vertices, f references 99999
+v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 99999
