@@ -2,7 +2,7 @@
 /// @file obj_loader.cpp
 /// @brief OBJ mesh loader — behavior-preserving port of legacy ObjLdr::load.
 ///
-/// Ported from legacy/loader/ObjLdr.cpp (Spec 06, Beat 2a).
+/// Ported from legacy2003/loader/ObjLdr.cpp (Spec 06, Beat 2a).
 ///
 /// Representation changes (no numeric effect):
 ///   - Output is MeshData (owned std::vector) instead of raw new[]/out-params.
@@ -14,81 +14,102 @@
 ///
 /// Algorithm lines are UNCHANGED.  Both bugs are FROZEN (Beat 2a):
 ///
-///   FROZEN BUG 1 (ObjLdr.cpp:83-84, row[0]=='v' only dispatch):
+///   FROZEN BUG 1 (legacy2003/loader/ObjLdr.cpp:83-84, row[0]=='v' only dispatch):
 ///     'vn' lines begin with 'v', so they route to read_vertex3.
 ///     Their XYZ normal components are appended as phantom vertex positions.
 ///     DO NOT add full-keyword matching here — that is the Beat-2b fix.
 ///
-///   FROZEN BUG 2 (read_face3:24, atoi stops at '/'):
+///   FROZEN BUG 2 (legacy2003/loader/ObjLdr.cpp:24 in read_face3, atoi stops at '/'):
 ///     Face tokens like "251//255" → atoi("251//255") == 251.
 ///     Only the vertex index survives; vt/vn attributes are silently discarded.
 ///     DO NOT split on '/' to extract attribute indices — that is the Beat-2b fix.
 ///
-/// NOTE (Beat 2b): atof/atoi are locale-dependent (LC_NUMERIC decimal separator).
-/// This is the locale hazard from Finding B.  Replace with from_chars / fast_float.
+/// Tokenizing is std::string_view and number conversion is parse_number.h, so the
+/// loader keeps no hidden state (the 2003 strtok cursor) and ignores the process
+/// locale (the 2003 atof/atoi).
 
 #include <decimate/types/mesh_data.h>
 
+#include "parse_number.h"
+
+#include <algorithm>
 #include <array>
-#include <cstdlib>
-#include <cstring>
+#include <cstddef>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace decimate {
 
-// Legacy face-vertex cap: read_face3 stored at most 10 indices per face.
-// Preserved (no model asset has a >10-gon; raising it is a Beat-2b decision).
+/// Face-vertex cap: legacy2003/loader/ObjLdr.cpp:14 (read_face3) stores `int indices[10]`.
+/// Preserved (no model asset has a >10-gon; raising it is a Beat-2b decision).
 constexpr int kMaxFaceVerts = 10;
 
-// ---------------------------------------------------------------------------
-// readVertex3 — port of ObjLdr::read_vertex3 (ObjLdr.cpp:50)
-// ---------------------------------------------------------------------------
-// Skips the first whitespace-separated token (the keyword, e.g. "v" or "vn"),
-// then reads three whitespace-separated floats via atof.
-//
-// Called for every line whose first character is 'v' — including 'vn' and 'vt'
-// lines (FROZEN BUG 1: row[0]-only dispatch in load()).
-//
-// NOTE (Beat 2b): atof is locale-dependent.
 
-static void readVertex3(char* line, std::vector<decimate::math::Vec3f>& coords) {
-    std::strtok(line, " \t");  // skip the keyword token
-    decimate::math::Vec3f v;
-    for (int i = 0; i < 3; ++i) {
-        const char* token = std::strtok(nullptr, " \t");
-        v[i] = token != nullptr ? static_cast<float>(std::atof(token)) : 0.0F;
+/// Pops the next token (a run of non-space, non-tab characters) off the front of
+/// @p rest.  Returns an empty view when none is left, which is how strtok reported
+/// "no more tokens" (a token is never empty).  Stateless, unlike strtok.
+static std::string_view nextToken(std::string_view &rest) {
+    const std::size_t begin = rest.find_first_not_of(" \t");
+    if (begin == std::string_view::npos) {
+        rest = {};
+        return {};
     }
+    rest.remove_prefix(begin);
+
+    const std::size_t      len = std::min(rest.find_first_of(" \t"), rest.size());
+    const std::string_view token = rest.substr(0, len);
+    rest.remove_prefix(len);
+    return token;
+}
+
+
+/// Port of ObjLdr::read_vertex3 (legacy2003/loader/ObjLdr.cpp:50): skips the keyword token
+/// ("v", "vn", ...) and reads three whitespace-separated floats; missing ones are 0.
+///
+/// Called for every line whose first character is 'v' — including 'vn' and 'vt' lines
+/// (FROZEN BUG 1: row[0]-only dispatch in load()).
+static void readVertex3(std::string_view line, std::vector<math::Vec3f> &coords) {
+    nextToken(line); // skip the keyword token
+
+    math::Vec3f v;
+    for (int i = 0; i < 3; ++i) {
+        // A missing token is empty and parses as 0.
+        v[i] = io_detail::parseFloat(nextToken(line));
+    }
+
     coords.push_back(v);
 }
 
-// ---------------------------------------------------------------------------
-// readFace3 — port of ObjLdr::read_face3 (ObjLdr.cpp:14)
-// ---------------------------------------------------------------------------
-// Reads up to kMaxFaceVerts whitespace-separated index tokens, converts each
-// via atoi, decrements by 1 (1-based → 0-based), then fan-triangulates n-gons.
-//
-// FROZEN BUG 2: atoi("251//255") == 251 — slash-separated refs are silently
-// truncated; only the vertex index survives.  DO NOT split on '/'.
 
-static void readFace3(char* line, std::vector<int>& faces) {
-    std::array<int, kMaxFaceVerts> indices{};
-    std::strtok(line, " \t");  // skip the 'f' keyword
+/// Port of ObjLdr::read_face3 (legacy2003/loader/ObjLdr.cpp:14): reads up to kMaxFaceVerts
+/// whitespace-separated index tokens, converts each via atoi, decrements by 1 (1-based to
+/// 0-based), then fan-triangulates n-gons. Lines with fewer than 3 indices are dropped.
+///
+/// FROZEN BUG 2: atoi("251//255") == 251 — slash-separated refs are silently
+/// truncated; only the vertex index survives.  DO NOT split on '/'.
+static void readFace3(std::string_view line, std::vector<int> &faces) {
+    std::array<int, kMaxFaceVerts> indices {};
+    nextToken(line); // skip the 'f' keyword
+
     int count = 0;
-    for (const char* token = std::strtok(nullptr, " \t");
-         token != nullptr && count < kMaxFaceVerts;
-         token = std::strtok(nullptr, " \t")) {
-        // FROZEN BUG 2: atoi stops at '/', discarding vt/vn attribute indices.
-        indices[static_cast<std::size_t>(count++)] = std::atoi(token) - 1;
+    for (std::string_view token = nextToken(line);
+         !token.empty() && count < kMaxFaceVerts;
+         token = nextToken(line)) {
+        // FROZEN BUG 2: the integer parse stops at '/', discarding vt/vn attribute indices.
+        indices[static_cast<std::size_t>(count++)] = io_detail::parseInt(token) - 1;
     }
+
+    // Fewer than 3 corners is not a polygon.
     if (count < 3) {
-        return;  // not a triangle
+        return;
     }
+
     // First triangle, then fan-triangulate the rest (n-gon → n-2 triangles).
     const int anchor = indices[0];
-    int       prev   = indices[1];
+    int       prev = indices[1];
     for (int i = 2; i < count; ++i) {
         faces.push_back(anchor);
         faces.push_back(prev);
@@ -97,17 +118,14 @@ static void readFace3(char* line, std::vector<int>& faces) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// loadObj — port of ObjLdr::load (ObjLdr.cpp:66)
-// ---------------------------------------------------------------------------
 
+/// Port of ObjLdr::load (legacy2003/loader/ObjLdr.cpp:66); contract in mesh_data.h.
 MeshData loadObj(std::string_view path) {
-    MeshData result;
-    std::vector<decimate::math::Vec3f>& coords = result.positions;
-    std::vector<int>&         faces  = result.indices;
+    MeshData                  result;
+    std::vector<math::Vec3f> &coords = result.positions;
+    std::vector<int>         &faces = result.indices;
 
-    // RAII file handle.
-    std::ifstream in{std::string(path)};
+    std::ifstream in { std::string(path) };
     if (!in) {
         throw std::runtime_error(
             std::string("loadObj: unable to open file '") + std::string(path) + "'");
@@ -115,18 +133,17 @@ MeshData loadObj(std::string_view path) {
 
     // Read line by line, dispatch on the first character (FROZEN BUG 1:
     // 'v' only, not "v " — so 'vn'/'vt' also route to readVertex3).
-    // strtok mutates its buffer, so we tokenize the line string's own storage
-    // (std::string::data() is mutable and null-terminated since C++17) — no
-    // fixed char[] copy, hence no 2047-char truncation.
+    // Lines are tokenized as string_views of `row` — no copy, no fixed char[]
+    // buffer, hence no 2047-char truncation.
     for (std::string row; std::getline(in, row);) {
         switch (row.empty() ? '\0' : row[0]) {
             case 'v':
                 // FROZEN BUG 1: 'vn'/'vt' lines (row[0]=='v') append their XYZ
                 // as phantom positions.  DO NOT add "v "/"vn " keyword matching.
-                readVertex3(row.data(), coords);
+                readVertex3(row, coords);
                 break;
             case 'f':
-                readFace3(row.data(), faces);
+                readFace3(row, faces);
                 break;
             default:
                 break;
@@ -150,4 +167,4 @@ MeshData loadObj(std::string_view path) {
     return result;
 }
 
-}  // namespace decimate
+} // namespace decimate

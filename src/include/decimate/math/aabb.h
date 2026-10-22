@@ -9,57 +9,55 @@
 
 namespace decimate::math {
 
-/**
- * AABB - Axis-Aligned Bounding Box
- *
- * Efficient spatial data structure for:
- * - Collision detection
- * - Ray intersection tests
- * - Frustum culling
- * - Spatial queries
- *
- * Based on mudvis implementation (Apache 2.0, Copyright 2003-2019 Andor Greissl)
- * with optimizations from Graphics Gems (Andrew Woo, Pierre Terdiman)
- *
- * Memory layout:
- * - 8 corner points arranged so inverted index gives opposite diagonal corner
- * - Near/far point computation using plane sign bits for fast culling
- *
- * Corner arrangement:      5 ---- 1
- *                         /|     /|
- *                        4 ---- 0 |
- *                        | 7 ---| 3
- *                        |/     |/
- *                        6 ---- 2
- */
-template<typename T>
+/// Axis-aligned bounding box for ray tests, plane culling and spatial queries.
+///
+/// Based on the mudvis implementation (Apache 2.0, Copyright 2003-2019 Andor Greissl)
+/// with optimizations from Graphics Gems (Andrew Woo, Pierre Terdiman).
+///
+/// Invariant: min <= max componentwise, and `mid` / `corners` match them (every mutator goes
+/// through initialize()). The caller must pass ordered corners to the two-corner ctor and
+/// initialize(); nothing re-sorts them. A default-constructed box is the zero box at the origin.
+///
+/// Memory layout:
+/// - 8 corner points arranged so the bit-inverted index gives the opposite diagonal corner
+/// - Near/far point computation using plane sign bits for fast culling
+///
+/// Corner arrangement:      5 ---- 1
+///                         /|     /|
+///                        4 ---- 0 |
+///                        | 7 ---| 3
+///                        |/     |/
+///                        6 ---- 2
+template <typename T>
 struct AABB {
     static_assert(std::is_floating_point<T>::value, "AABB requires floating point type");
 
-    Vec3<T> min, max, mid;
-    std::vector<Vec3<T>> corners; // 8 corner points
+    Vec3<T>              min, max, mid;
+    std::vector<Vec3<T>> corners; ///< The 8 corner points, laid out as in the diagram above.
 
-    // Constructors
+    /// Degenerate box at the origin (min == max == mid == 0); corners are allocated but zero.
     AABB() noexcept {
         corners.resize(8);
     }
 
-    AABB(const Vec3<T>& min, const Vec3<T>& max) noexcept
+    /// Box from two opposite corners; the caller guarantees min <= max componentwise.
+    AABB(const Vec3<T> &min, const Vec3<T> &max) noexcept
         : min(min), max(max) {
         initialize(min, max);
     }
 
-    AABB(const std::vector<Vec3<T>>& vertices) noexcept {
+    /// Tight box around @p vertices; an empty set yields the zero box at the origin.
+    AABB(const std::vector<Vec3<T>> &vertices) noexcept {
         if (vertices.empty()) {
             initialize(Vec3<T>::zero(), Vec3<T>::zero());
             return;
         }
 
-        // Find min/max extents
+        // Seed with the first vertex so the running min/max need no infinity sentinels.
         min = vertices[0];
         max = vertices[0];
 
-        for (const auto& v : vertices) {
+        for (const auto &v : vertices) {
             min.x = std::min(min.x, v.x);
             min.y = std::min(min.y, v.y);
             min.z = std::min(min.z, v.z);
@@ -72,7 +70,8 @@ struct AABB {
         initialize(min, max);
     }
 
-    void initialize(const Vec3<T>& minPt, const Vec3<T>& maxPt) noexcept {
+    /// Sets min/max and recomputes `mid` and the 8 corners; the single place that keeps them in sync.
+    void initialize(const Vec3<T> &minPt, const Vec3<T> &maxPt) noexcept {
         min = minPt;
         max = maxPt;
         mid = (min + max) * T(0.5);
@@ -89,13 +88,13 @@ struct AABB {
         corners[7] = Vec3<T>(min.x, min.y, min.z);
     }
 
-    // Accessors
-    const Vec3<T>& getCorner(int index) const noexcept {
-        return corners[index & 0x7];  // Wrap to 0-7
+    /// Corner @p index in 0..7 (see diagram); the index is masked with 7, so out-of-range values wrap.
+    const Vec3<T> &getCorner(int index) const noexcept {
+        return corners[index & 0x7]; // Wrap to 0-7
     }
 
-    // --- p-vertex / n-vertex fast plane culling ----------------------------
-    // Faithful port of the 2003-2019 mudvis/vermessung farCorner/nearCorner.
+    // p-vertex / n-vertex fast plane culling.
+    // Port of the 2003-2019 mudvis/vermessung farCorner/nearCorner.
     //
     // The corner FARTHEST along the plane normal (the "p-vertex") is selected
     // in O(1) from the plane's precomputed sign bits: for a negative normal
@@ -104,12 +103,12 @@ struct AABB {
     // complement of the plane's signbits (signbit set ⇔ normal negative).
 
     /// Corner farthest along the plane normal (p-vertex).
-    const Vec3<T>& farCorner(const Plane<T>& plane) const noexcept {
+    const Vec3<T> &farCorner(const Plane<T> &plane) const noexcept {
         return corners[(~plane.signbits) & 0x7];
     }
 
     /// Corner nearest along the plane normal (n-vertex); inverse of farCorner.
-    const Vec3<T>& nearCorner(const Plane<T>& plane) const noexcept {
+    const Vec3<T> &nearCorner(const Plane<T> &plane) const noexcept {
         return corners[plane.signbits & 0x7];
     }
 
@@ -117,77 +116,88 @@ struct AABB {
     /// (i.e. even the p-vertex is behind it) — the fast, conservative reject.
     /// Conservative: never reports "outside" for a box that actually crosses
     /// the plane, so it can over-include but never wrongly exclude.
-    bool isOutsidePlane(const Plane<T>& plane) const noexcept {
+    bool isOutsidePlane(const Plane<T> &plane) const noexcept {
         return plane.signedDistance(farCorner(plane)) < T(0);
     }
 
-    Vec3<T> getMin() const noexcept { return min; }
-    Vec3<T> getMax() const noexcept { return max; }
-    Vec3<T> getMid() const noexcept { return mid; }
+    /// Minimum corner.
+    Vec3<T> getMin() const noexcept {
+        return min;
+    }
+    /// Maximum corner.
+    Vec3<T> getMax() const noexcept {
+        return max;
+    }
+    /// Center point, (min + max) / 2.
+    Vec3<T> getMid() const noexcept {
+        return mid;
+    }
 
-    Vec3<T> getExtents() const noexcept { return max - min; }
-    Vec3<T> getHalfExtents() const noexcept { return (max - min) * T(0.5); }
+    /// Full side lengths, max - min.
+    Vec3<T> getExtents() const noexcept {
+        return max - min;
+    }
+    /// Half side lengths, (max - min) / 2.
+    Vec3<T> getHalfExtents() const noexcept {
+        return (max - min) * T(0.5);
+    }
 
-    // Properties
+    /// Total area of the six faces.
     T surfaceArea() const noexcept {
         Vec3<T> extent = max - min;
         return T(2) * (extent.x * extent.y + extent.x * extent.z + extent.y * extent.z);
     }
 
+    /// Enclosed volume.
     T volume() const noexcept {
         Vec3<T> extent = max - min;
         return extent.x * extent.y * extent.z;
     }
 
+    /// Shortest side length.
     T minExtent() const noexcept {
         Vec3<T> extent = max - min;
         return std::min(std::min(extent.x, extent.y), extent.z);
     }
 
+    /// Longest side length.
     T maxExtent() const noexcept {
         Vec3<T> extent = max - min;
         return std::max(std::max(extent.x, extent.y), extent.z);
     }
 
-    // Test if point is inside AABB
-    bool contains(const Vec3<T>& point) const noexcept {
+    /// True if @p point lies inside or on the boundary of the box.
+    bool contains(const Vec3<T> &point) const noexcept {
         return point.x >= min.x && point.x <= max.x &&
                point.y >= min.y && point.y <= max.y &&
                point.z >= min.z && point.z <= max.z;
     }
 
-    // AABB-AABB intersection test
-    bool intersects(const AABB& other) const noexcept {
-        // Min against Max test
+    /// True if the two boxes overlap or touch (separating-axis test on the three axes).
+    bool intersects(const AABB &other) const noexcept {
         if (min.x > other.max.x || min.y > other.max.y || min.z > other.max.z)
             return false;
 
-        // Max against Min test
         if (max.x < other.min.x || max.y < other.min.y || max.z < other.min.z)
             return false;
 
-        return true;  // Overlap exists
+        return true;
     }
 
-    /**
-     * Ray-AABB intersection test
-     *
-     * Based on Andrew Woo (Graphics Gems) with optimizations by Pierre Terdiman
-     * ~20-30% faster than original, more robust
-     *
-     * @param origin Ray origin
-     * @param dir Ray direction (does not need to be normalized)
-     * @param tMin Optional output: distance to entry point
-     * @param tMax Optional output: distance to exit point
-     * @return true if ray intersects AABB
-     */
-    bool intersectsRay(const Vec3<T>& origin, const Vec3<T>& dir,
-                       T* tMin = nullptr, T* tMax = nullptr) const noexcept {
-        bool inside = true;
+    /// Ray-AABB intersection test, after Andrew Woo (Graphics Gems) with Pierre Terdiman's optimizations.
+    ///
+    /// @param origin  Ray origin.
+    /// @param dir     Ray direction; need not be normalized, t is then in units of |dir|.
+    /// @param tMin    Optional out: ray parameter of the entry point; 0 when origin is inside.
+    /// @param tMax    Optional out: currently the SAME value as tMin (exit point is not computed).
+    /// @return true if the ray (t >= 0) hits the box.
+    bool intersectsRay(const Vec3<T> &origin, const Vec3<T> &dir,
+                       T *tMin = nullptr, T *tMax = nullptr) const noexcept {
+        bool    inside = true;
         Vec3<T> coord;
         Vec3<T> maxT(-1, -1, -1);
 
-        // Find candidate planes
+        // Per axis: if the origin is outside the slab, the ray can only enter through the near plane.
         for (int i = 0; i < 3; i++) {
             T orig = i == 0 ? origin.x : (i == 1 ? origin.y : origin.z);
             T direction = i == 0 ? dir.x : (i == 1 ? dir.y : dir.z);
@@ -205,23 +215,27 @@ struct AABB {
             }
         }
 
-        // Ray origin inside bounding box
+        // Origin inside the box: hit at t = 0 by definition.
         if (inside) {
-            if (tMin) *tMin = T(0);
-            if (tMax) *tMax = T(0);
+            if (tMin)
+                *tMin = T(0);
+            if (tMax)
+                *tMax = T(0);
             return true;
         }
 
-        // Get largest of the maxT's for final choice of intersection
+        // The entry point is on the candidate plane with the largest t (the last slab entered).
         int whichPlane = 0;
-        if (maxT.y > maxT.x) whichPlane = 1;
-        if (maxT.z > maxT[whichPlane]) whichPlane = 2;
+        if (maxT.y > maxT.x)
+            whichPlane = 1;
+        if (maxT.z > maxT[whichPlane])
+            whichPlane = 2;
 
-        // Check final candidate actually inside box
+        // All candidates negative (or no candidate): the box is behind the ray.
         if (maxT[whichPlane] < T(0))
             return false;
 
-        // Check intersection point is inside AABB
+        // The hit point on the chosen plane must lie within the other two slabs.
         for (int i = 0; i < 3; i++) {
             if (i != whichPlane) {
                 T orig = i == 0 ? origin.x : (i == 1 ? origin.y : origin.z);
@@ -235,17 +249,18 @@ struct AABB {
             }
         }
 
-        if (tMin) *tMin = maxT[whichPlane];
+        if (tMin)
+            *tMin = maxT[whichPlane];
         if (tMax) {
-            // Compute exit point if needed (not implemented in original)
+            // Exit point is not computed; report the entry t.
             *tMax = maxT[whichPlane];
         }
 
-        return true;  // Ray hits box
+        return true;
     }
 
-    // Expand AABB to include a point
-    void expand(const Vec3<T>& point) noexcept {
+    /// Grows the box to include @p point (never shrinks).
+    void expand(const Vec3<T> &point) noexcept {
         min.x = std::min(min.x, point.x);
         min.y = std::min(min.y, point.y);
         min.z = std::min(min.z, point.z);
@@ -254,49 +269,48 @@ struct AABB {
         max.y = std::max(max.y, point.y);
         max.z = std::max(max.z, point.z);
 
-        initialize(min, max);  // Recompute corners and mid
+        initialize(min, max); // keeps mid and corners in sync
     }
 
-    // Expand AABB to include another AABB
-    void expand(const AABB& other) noexcept {
+    /// Grows the box to include @p other.
+    void expand(const AABB &other) noexcept {
         expand(other.min);
         expand(other.max);
     }
 
-    // Transform AABB by matrix (computes new AABB enclosing transformed box)
-    AABB transformed(const Mat4<T>& m) const noexcept {
-        // Transform all 8 corners and recompute AABB
+    /// Box enclosing this box after transformation by @p m; conservative (not tight) for rotations.
+    AABB transformed(const Mat4<T> &m) const noexcept {
+        // A rotated box is no longer axis-aligned, so re-fit around all 8 transformed corners.
         std::vector<Vec3<T>> transformedCorners;
         transformedCorners.reserve(8);
 
-        for (const auto& corner : corners) {
+        for (const auto &corner : corners) {
             transformedCorners.push_back(m.transformPoint(corner));
         }
 
         return AABB(transformedCorners);
     }
 
-    // Merge two AABBs
-    static AABB merge(const AABB& a, const AABB& b) noexcept {
+    /// Smallest box containing both @p a and @p b.
+    static AABB merge(const AABB &a, const AABB &b) noexcept {
         Vec3<T> newMin(
             std::min(a.min.x, b.min.x),
             std::min(a.min.y, b.min.y),
-            std::min(a.min.z, b.min.z)
-        );
+            std::min(a.min.z, b.min.z));
         Vec3<T> newMax(
             std::max(a.max.x, b.max.x),
             std::max(a.max.y, b.max.y),
-            std::max(a.max.z, b.max.z)
-        );
+            std::max(a.max.z, b.max.z));
         return AABB(newMin, newMax);
     }
 };
 
-// Common typedefs
+
 using AABBf = AABB<float>;
 using AABBd = AABB<double>;
 
-// Ensure standard layout for GPU compatibility
-static_assert(std::is_standard_layout<Vec3<float>>::value, "Vec3f must be standard layout");
+
+// Vec3 is uploaded to the GPU as-is, so it must stay standard layout.
+static_assert(std::is_standard_layout<Vec3f>::value, "Vec3f must be standard layout");
 
 } // namespace decimate::math

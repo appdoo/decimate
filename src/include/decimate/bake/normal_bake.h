@@ -5,17 +5,21 @@
 /// @brief Raytraced normal bake — low←high (Spec 10 Step 2).
 ///
 /// `bake()` is the modernized `normalmap::mapnormals` from
-/// `legacy/split/texturesample.cpp:339-383`.
+/// `legacy2003/split/texturesample.cpp:339-383`.
 ///
 /// ## Algorithm summary (three passes)
 ///
 /// 1. **Clear**: fill the texel buffer with the background sentinel (128,128,128).
 /// 2. **Rasterize + raytrace**: for each low-poly face, rasterize its UV
 ///    triangle into the atlas, interpolate the low-poly ray origin/direction,
-///    cast the ray against every high-poly face, range-compress the hit normal
-///    (or fall back to the low normal on a miss) into the texel.
-/// 3. **Dilate**: 6-pass dilation fills background texels from their filled
-///    neighbours (seam bleed / gutter fill).
+///    cast the ray against the high-poly mesh (exact nearest hit by |t|, via
+///    `rtrace::TriangleBvh`, identical to the 2003 brute-force loop),
+///    range-compress the hit normal (or fall back to the low normal on a miss)
+///    into the texel. Texels are shaded on `threads` workers; the result is
+///    byte-identical for any thread count.
+/// 3. **Dilate**: `dilatePasses` passes of dilation fill background texels from their filled
+///    neighbours (seam bleed / gutter fill). Off by default; the 2003 `mapnormals` always runs
+///    its 6-pass `dilate` (legacy2003/split/texturesample.cpp:382).
 ///
 /// ## Seam-correct gutter fill (`bakeSeamFill`)
 ///
@@ -39,15 +43,6 @@
 /// - No file I/O — returns the `NormalMap` in memory.
 /// - No GL / GLUT / windows.h / global state.
 /// - Does NOT reach into `legacy/`.
-///
-/// ## getTestFaces
-///
-/// The legacy 6-plane prism cull (`getTestFaces`) is implemented (faithful port):
-/// per low face, the high mesh is culled to the faces inside the low triangle's
-/// 1.5×-scaled swept prism, and only those are raytraced.  This is the dense→
-/// sparse normal-transfer optimisation, not a general RT accel.  Output is
-/// identical when high is not denser than low; the speedup applies when high ≫
-/// low.  (A BVH/SAH accel for the per-face ray test is a separate Spec-13 item.)
 
 #include <vector>
 
@@ -74,24 +69,31 @@ namespace decimate::bake {
 /// @param dilatePasses Opt-in gutter extension: pixels to grow each chart's
 ///                     baked region outward (8-neighbour fill, one px/pass) to
 ///                     avoid seams under bilinear filtering on the mesh.
-///                     DEFAULT 0 = the original 2003 output (no dilation; no
-///                     normals outside a chart). When > 0 the atlas packer must
+///                     DEFAULT 0 = no dilation (no normals outside a chart); a deliberate deviation:
+///                     the 2003 mapnormals always dilates 6 passes
+///                     (`legacy2003/split/texturesample.cpp:214,222,382`), and the seam fill
+///                     (`bakeSeamFill`) replaces dilate at chart edges. When > 0 the atlas packer must
 ///                     reserve matching clearance, else skirts bleed between
 ///                     charts (see packAtlas's gutter).
+/// @param tangentSpace Store normals in the per-texel tangent frame instead of object space.
+/// @param threads      Worker threads for the shading phase: 0 = all cores, 1 = serial on the
+///                     caller's thread, n = up to n workers. The output never depends on it.
+///                     Builds with `DECIMATE_THREADS=OFF` always run one worker.
 /// @returns            `NormalMap` of size `texSize × texSize` containing the
 ///                     range-encoded normals; background texels are (128,128,128).
 ///
 /// @pre `lowCornerUV.size() == 3 * (low.indices.size() / 3)`.
 /// @pre `lowNormals.size()  == low.positions.size()`.
 /// @pre `highNormals.size() == high.positions.size()`.
-[[nodiscard]] NormalMap bake(const decimate::MeshData&                   low,
-                             const std::vector<decimate::math::Vec2<float>>&   lowCornerUV,
-                             const std::vector<decimate::math::Vec3<float>>&   lowNormals,
-                             const decimate::MeshData&                   high,
-                             const std::vector<decimate::math::Vec3<float>>&   highNormals,
-                             int                                      texSize,
-                             int                                      dilatePasses = 0,
-                             bool                                     tangentSpace = false);
+[[nodiscard]] NormalMap bake(const decimate::MeshData       &low,
+                             const std::vector<math::Vec2f> &lowCornerUV,
+                             const std::vector<math::Vec3f> &lowNormals,
+                             const decimate::MeshData       &high,
+                             const std::vector<math::Vec3f> &highNormals,
+                             int                             texSize,
+                             int                             dilatePasses = 0,
+                             bool                            tangentSpace = false,
+                             int                             threads = 0);
 
 /// @brief Bake + seam-correct gutter fill (2-pass, cross-chart sampling).
 ///
@@ -125,20 +127,23 @@ namespace decimate::bake {
 /// @param highNormals  Per-vertex normals on the high mesh.
 /// @param texSize      Texture resolution.
 /// @param dilatePasses Blur-dilate passes applied after seam fill (open edges).
+/// @param tangentSpace As in `bake()`.
+/// @param threads      As in `bake()`; applies to pass 1 (pass 2 is serial).
 /// @returns            NormalMap with seam-correct gutter.
 ///
 /// @pre `lowCornerUV.size() == 3 * (low.indices.size() / 3)`.
 /// @pre `faceToChart.size() == low.indices.size() / 3`.
 [[nodiscard]] NormalMap bakeSeamFill(
-    const decimate::MeshData&                   low,
-    const decimate::HalfEdgeMesh&               hem,
-    const std::vector<decimate::math::Vec2<float>>&   lowCornerUV,
-    const std::vector<int>&                 faceToChart,
-    const std::vector<decimate::math::Vec3<float>>&   lowNormals,
-    const decimate::MeshData&                   high,
-    const std::vector<decimate::math::Vec3<float>>&   highNormals,
-    int                                      texSize,
-    int                                      dilatePasses = 2,
-    bool                                     tangentSpace = false);
+    const decimate::MeshData       &low,
+    const decimate::HalfEdgeMesh   &hem,
+    const std::vector<math::Vec2f> &lowCornerUV,
+    const std::vector<int>         &faceToChart,
+    const std::vector<math::Vec3f> &lowNormals,
+    const decimate::MeshData       &high,
+    const std::vector<math::Vec3f> &highNormals,
+    int                             texSize,
+    int                             dilatePasses = 2,
+    bool                            tangentSpace = false,
+    int                             threads = 0);
 
-}  // namespace decimate::bake
+} // namespace decimate::bake

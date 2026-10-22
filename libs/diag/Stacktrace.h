@@ -20,7 +20,7 @@ namespace diag {
 class Stacktrace {
 public:
     struct Frame {
-        void*       address;        ///< Raw instruction pointer
+        void       *address;        ///< Raw instruction pointer
         std::string symbol;         ///< Demangled function name
         std::string module;         ///< Library / executable basename
         std::string sourceLocation; ///< File:line if debug info is available
@@ -42,7 +42,7 @@ public:
      * @param detailed Include raw addresses and byte offsets.
      * @return Formatted string terminated by a newline.
      */
-    static std::string format(const std::vector<Frame>& frames, bool detailed = true);
+    static std::string format(const std::vector<Frame> &frames, bool detailed = true);
 
     /**
      * Print the current stacktrace to stderr.
@@ -61,8 +61,10 @@ public:
     static void installCrashHandler();
 
 private:
-    static std::string demangle(const char* mangled);
-    static void        signalHandler(int signal);
+    /// Itanium-ABI demangle; returns the input unchanged when it cannot be demangled.
+    static std::string demangle(const char *mangled);
+    /// Handler for the fatal signals installed by installCrashHandler().
+    static void signalHandler(int signal);
 };
 
 } // namespace diag

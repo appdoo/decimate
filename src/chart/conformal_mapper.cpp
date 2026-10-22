@@ -1,22 +1,27 @@
 // This file is part of the decimate library; see decimate.h for version/license details.
 /// @file conformal_mapper.cpp
-/// @brief LSCM chart flattening — behavior-preserving port of CConformalMapper.
+/// @brief LSCM chart flattening — a port of 2003 `CConformalMapper` (`legacy2003/chartification/cconformalmapper.cpp`)
+/// with a different solver (sparse Cholesky for CG) and a robustness layer; UVs equal 2003 only to the golden tolerance.
 ///
 /// ## Algorithm (Lévy et al. 2002 — Least-Squares Conformal Maps)
 ///
 /// For each chart:
-///   1. Collect the unique local vertex set over all chart faces (face-scan order).
-///   2. Identify boundary vertices; pin the two farthest-apart pair to fixed UVs.
+///   1. Build the chart's local vertex set by CORNER, merging corners only across non-seam edges
+///      (2003 `CreateVertexStructure` after `CutBoundaryPath`,
+///      `legacy2003/chartification/cchartification.cpp:395-407`), so a chart that touches itself is cut into a disk.
+///   2. Identify boundary vertices; pin the farthest-apart pair to fixed UVs.
 ///   3. For each triangle, compute complex Cauchy-Riemann gradients via
 ///      Gram-Schmidt orthonormalization in the triangle's 3D tangent plane.
 ///   4. Directly assemble the normal equations AᵀA x = Aᵀb for free
-///      (unpinned) vertices and solve via ConjugateGradientSolver.
-///   6. Back-substitute to fill HalfEdgeChart::uv for every local vertex.
+///      (unpinned) vertices and solve them by sparse Cholesky (Eigen SimplicialLDLT).
+///      2003 solved by CG, tol 1e-12, cap 15000 (legacy2003/chartification/cconformalmapper.cpp:306);
+///      on 6k-face charts that took seconds — the direct solve is exact and takes milliseconds.
+///   5. Back-substitute to fill HalfEdgeChart::uv for every local vertex.
 ///
-/// ## Operator mapping from legacy Vec3 to decimate::math::Vec3
+/// ## Operator mapping from legacy Vec3 to math::Vec3
 ///
 ///   Legacy `(ba) * e1` — Vec3::operator*(Vec3) was the dot product.
-///   → `ba.dot(e1)` — decimate::math::Vec3::operator*(Vec3) is component-wise; must use .dot().
+///   → `ba.dot(e1)` — math::Vec3::operator*(Vec3) is component-wise; must use .dot().
 ///
 ///   Legacy Gram-Schmidt: `w2 = w2 - (w1 * (w2 * w1))`
 ///   Here `w2 * w1` is a dot product (scalar), then `w1 * scalar` scales w1.
@@ -42,7 +47,7 @@
 ///
 ///   x = [u_free0, …, u_free{N-1}, v_free0, …, v_free{N-1}]  (u-block then v-block)
 ///
-///   Matches legacy CopyResult (cconformalmapper.cpp:36-42):
+///   Mirrors 2003 CopyResult (legacy2003/chartification/cconformalmapper.cpp:35-42):
 ///     vertices[offset + i].u = (float) vec[i];
 ///     vertices[offset + i].v = (float) vec[num + i];
 ///
@@ -50,154 +55,79 @@
 
 #include <decimate/chart/parametrize.h>
 
+#include "chart_quality.h"
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include <Eigen/SparseCholesky>
 
 #include <decimate/math/vec2.h>
 #include <decimate/math/vec3.h>
-#include <decimate/math/cg_solver.h>
 #include <decimate/chart/chart.h>
 #include <decimate/mesh/half_edge_mesh.h>
 #include <decimate/types/mesh_data.h>
 
 namespace decimate::chart {
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 namespace {
 
-/// @brief Extract the 3D position of a mesh vertex.
-[[nodiscard]] decimate::math::Vec3<float> vertexPos(const MeshData& data, int vid) noexcept {
-    return data.positions[static_cast<std::size_t>(vid)];
-}
+using UV = math::Vec2f;
 
-/// @brief One entry in a sparse matrix row: (column, value).
+
+/// One entry in a sparse matrix row: (column, value).
 struct RowEntry {
     int    col;
     double val;
 };
 
-/// @brief Accumulate one sparse row's outer product into AtA and Atb.
-///
-/// For each pair of entries (ea, eb) in row: AtA[ea.col][eb.col] += ea.val * eb.val.
-/// For each entry ea: atb[ea.col] += ea.val * rhs.
-void accumRow(decimate::math::ConjugateGradientSolver& cg,
-              std::vector<double>&                  atb,
-              const std::vector<RowEntry>&          row,
-              double                                rhs) {
-    for (const auto& ea : row) {
-        atb[static_cast<std::size_t>(ea.col)] += ea.val * rhs;
-        for (const auto& eb : row) {
-            cg.addEntry(ea.col, eb.col, ea.val * eb.val);
+
+/// Union-find over small integer ids; the root is always the smallest id of its set.
+class DisjointSet {
+public:
+    explicit DisjointSet(std::size_t n)
+        : parent_(n) {
+        std::iota(parent_.begin(), parent_.end(), 0);
+    }
+
+    [[nodiscard]] int find(int x) {
+        while (parent_[static_cast<std::size_t>(x)] != x) {
+            int &p = parent_[static_cast<std::size_t>(x)];
+            p = parent_[static_cast<std::size_t>(p)]; // path halving
+            x = p;
+        }
+        return x;
+    }
+
+    void unite(int a, int b) {
+        a = find(a);
+        b = find(b);
+        if (a != b) {
+            parent_[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
         }
     }
-}
 
-/// @brief Local vertex set for a chart.
-struct LocalVertexSet {
-    std::vector<int>             meshId;   ///< local index → mesh vertex id.
-    std::unordered_map<int, int> localOf;  ///< mesh vertex id → local index.
+private:
+    std::vector<int> parent_;
 };
 
-/// @brief Collect the unique local vertex set from chart faces.
-///
-/// Scans MeshData::indices in face-list order; first encounter determines
-/// each vertex's local index.  Ports the Step-1 block of Parametrize().
-LocalVertexSet collectLocalVertices(const Chart& chart, const MeshData& data) {
-    LocalVertexSet vs;
-    vs.meshId.reserve(chart.faces.size() * 3);
-    for (int fid : chart.faces) {
-        const int base = fid * 3;
-        for (int k = 0; k < 3; ++k) {
-            const int vid = data.indices[static_cast<std::size_t>(base + k)];
-            if (vs.localOf.find(vid) == vs.localOf.end()) {
-                vs.localOf[vid] = static_cast<int>(vs.meshId.size());
-                vs.meshId.push_back(vid);
-            }
-        }
-    }
-    return vs;
-}
 
-/// @brief Find the two boundary vertices farthest apart in 3D space.
-///
-/// Derives the boundary vertex set from the cut chart's own
-/// `localMesh.boundaryPointIndices()` — the faithful transform of
-/// `CChartification::CreateVertexStructure` (`cchartification.cpp:395`), which
-/// cuts the mesh (`CutBoundaryPath` nulls `sym` on boundary half-edges,
-/// `cchartification.cpp:484+`) making the boundary implicit (`sym==NULL`).
-/// `boundaryPointIndices()` walks exactly that implicit boundary, matching the
-/// 2003 `Boundaries()→packer` hand-off exactly.
-///
-/// Each local boundary index is mapped to its mesh vertex id via `localToMesh`,
-/// then the O(n²) farthest-pair search (Diameter) finds the pin pair.
-///
-/// The 08-03 checked local-lookup (D1 guard) is preserved via the
-/// `boundaryPointIndices()` local indices which are guaranteed to be in
-/// `[0, localToMesh.size())` by the cut mesh invariant.
-///
-/// Ports Diameter() + InitPinned() (cconformalmapper.cpp:48-193).
-std::pair<int, int> findPinVertices(const HalfEdgeMesh&      localMesh,
-                                    const std::vector<int>&  localToMesh,
-                                    const MeshData&          data,
-                                    const LocalVertexSet&    vs) {
-    // Collect boundary vertex mesh-ids from the cut mesh boundary loop.
-    // boundaryPointIndices() walks sym==kNoHalfedge half-edges — exactly the
-    // boundary left implicit by the cut (cchartification.cpp:484+).
-    const std::vector<std::uint32_t> bndLocal = localMesh.boundaryPointIndices();
+/// The chart's local triangulation: vertices by corner, cut along its seams.
+struct CornerMesh {
+    std::vector<int> localToMesh; ///< local vertex -> mesh vertex id (many-to-one across seams).
+    std::vector<int> localTri;    ///< 3 local vertices (corners a, b, c) per chart face.
+};
 
-    std::vector<int> bverts;
-    bverts.reserve(bndLocal.size());
-    for (std::uint32_t li : bndLocal) {
-        bverts.push_back(localToMesh[static_cast<std::size_t>(li)]);
-    }
 
-    const int numLocal = static_cast<int>(vs.meshId.size());
-    if (bverts.size() < 2) {
-        bverts.clear();
-        if (numLocal >= 1) { bverts.push_back(vs.meshId[0]); }
-        if (numLocal >= 2) { bverts.push_back(vs.meshId[1]); }
-    }
-
-    // O(|bverts|²) farthest-pair search (Diameter, cconformalmapper.cpp:48-82).
-    int   pin0MeshId = bverts[0];
-    int   pin1MeshId = bverts.size() > 1 ? bverts[1] : bverts[0];
-    float maxDist    = 0.0f;
-    for (std::size_t ii = 0; ii < bverts.size(); ++ii) {
-        const decimate::math::Vec3<float> pi = vertexPos(data, bverts[ii]);
-        for (std::size_t jj = ii + 1; jj < bverts.size(); ++jj) {
-            const float d = (vertexPos(data, bverts[jj]) - pi).length();
-            if (d > maxDist) {
-                maxDist    = d;
-                pin0MeshId = bverts[ii];
-                pin1MeshId = bverts[jj];
-            }
-        }
-    }
-    // Checked lookup: if a pin vertex is absent from localOf, fail loudly with
-    // context rather than throwing a bare std::out_of_range.  (08-03 Fix 2 / D1 guard)
-    auto checkedLocal = [&](int meshVid) -> int {
-        const auto it = vs.localOf.find(meshVid);
-        if (it == vs.localOf.end()) {
-            throw std::runtime_error(
-                "findPinVertices: vertex " + std::to_string(meshVid) +
-                " absent from localOf — boundary vertex not in chart.faces?");
-        }
-        return it->second;
-    };
-
-    const int pin0Local = checkedLocal(pin0MeshId);
-    const int pin1Local = checkedLocal(pin1MeshId);
-    return {pin0Local, pin1Local};
-}
-
-/// @brief Pinning state: local indices + UV values for the two pinned vertices.
+/// Pinning state: local indices + UV values for the two pinned vertices.
 struct PinState {
     int    pin0Local;   ///< Local index of pin0 (→ UV 0,0).
     int    pin1Local;   ///< Local index of pin1 (→ UV 1,1).
@@ -208,57 +138,199 @@ struct PinState {
     double vPin1 = 1.0; ///< v for pin1.
 };
 
-/// @brief Assemble the LSCM normal equations AᵀAx = Aᵀb for one chart.
-///
-/// Iterates over the chart's triangles, computes complex Cauchy-Riemann
-/// gradients via Gram-Schmidt orthonormalization, and accumulates them
-/// directly into `cg` (AtA matrix) and `atb` (Aᵀb vector).
-/// Pinned-vertex contributions are folded into `atb` immediately.
-///
-/// Ported from CConformalMapper::Parametrize (cconformalmapper.cpp:268–370).
-void assembleLSCMSystem(const Chart&                          chart,
-                               const MeshData&                       data,
-                               const std::unordered_map<int, int>&   localOf,
-                               const std::vector<int>&               freeIdx,
-                               const PinState&                       pins,
-                               decimate::math::ConjugateGradientSolver&  cg,
-                               std::vector<double>&                  atb) {
-    for (int fid : chart.faces) {
-        const int base = fid * 3;
-        const int va   = data.indices[static_cast<std::size_t>(base + 0)];
-        const int vb   = data.indices[static_cast<std::size_t>(base + 1)];
-        const int vc   = data.indices[static_cast<std::size_t>(base + 2)];
+} // namespace
 
-        // Checked local lookup — throw with context if any face vertex is absent
-        // from localOf.  After 08-03 Fix 1 this cannot fire (collectLocalVertices
-        // and assembleLSCMSystem both iterate the same chart.faces), but a bare
-        // .at() would reproduce the D1 failure mode silently — prefer loud failure.
-        auto localAt = [&](int vid) -> int {
-            const auto it = localOf.find(vid);
-            if (it == localOf.end()) {
-                throw std::runtime_error(
-                    "assembleLSCMSystem: vertex " + std::to_string(vid) +
-                    " absent from localOf in chart " + std::to_string(chart.id) +
-                    " — invariant violation (Fix 1 not applied?)");
+
+/// 3D position of a mesh vertex.
+[[nodiscard]] static math::Vec3f vertexPos(const MeshData &data, int vid) noexcept {
+    return data.positions[static_cast<std::size_t>(vid)];
+}
+
+
+/// Accumulate one sparse row's outer product into AtA and Atb:
+/// AtA[ea.col][eb.col] += ea.val * eb.val for every entry pair, atb[ea.col] += ea.val * rhs for every entry.
+static void accumRow(std::vector<Eigen::Triplet<double>> &ata,
+                     std::vector<double>                 &atb,
+                     const std::vector<RowEntry>         &row,
+                     double                               rhs) {
+    // every entry pair feeds the matrix; the right-hand side takes one term per entry
+    for (const auto &ea : row) {
+        atb[static_cast<std::size_t>(ea.col)] += ea.val * rhs;
+        for (const auto &eb : row) {
+            ata.emplace_back(ea.col, eb.col, ea.val * eb.val);
+        }
+    }
+}
+
+
+/// Merge the corners of the chart across its non-seam intra-chart edges.
+/// A corner is a half-edge slot: half-edge `3f + e` stands for the corner at its `end` vertex;
+/// slot `3 * i + e` is that corner for local face `i` (face `chart.faces[i]`).
+static DisjointSet mergeCorners(const HalfEdgeMesh &mesh, const Chart &chart) {
+    const std::size_t numFaces = chart.faces.size();
+
+    // mesh face -> local face, to tell whether a neighbour belongs to this chart
+    std::unordered_map<int, int> localFace;
+    localFace.reserve(numFaces * 2);
+    for (std::size_t i = 0; i < numFaces; ++i) {
+        localFace.emplace(chart.faces[i], static_cast<int>(i));
+    }
+
+    // sorted seams, so the per-edge test is a binary search
+    std::vector<int> seams = chart.seamHalfEdges;
+    std::ranges::sort(seams);
+
+    const auto slotOf = [&](HeIndex h, int face) {
+        return 3 * face + static_cast<int>(h % 3);
+    };
+
+    // walk every half-edge once; an interior non-seam edge glues the two corners at each of its ends
+    DisjointSet corners(numFaces * 3);
+    for (std::size_t slot = 0; slot < numFaces * 3; ++slot) {
+        const std::size_t i = slot / 3;
+        const HeIndex     h = static_cast<HeIndex>(chart.faces[i]) * 3 + static_cast<HeIndex>(slot % 3);
+        const HeIndex     s = mesh.sym(h);
+        if (s == kNoHalfedge || s < h) {
+            continue; // each edge once, from its lower half
+        }
+        const auto other = localFace.find(static_cast<int>(mesh.halfedge(s).face));
+        if (other == localFace.end() || std::ranges::binary_search(seams, static_cast<int>(h))) {
+            continue; // the neighbour is outside the chart, or the edge is cut
+        }
+
+        // h runs a->b, s runs b->a: tip(h) ~ origin(s), origin(h) ~ tip(s)
+        const int fi = static_cast<int>(i);
+        const int fj = other->second;
+        corners.unite(slotOf(h, fi), slotOf(mesh.next(mesh.next(s)), fj));
+        corners.unite(slotOf(mesh.next(mesh.next(h)), fi), slotOf(s, fj));
+    }
+    return corners;
+}
+
+
+/// Build the local vertex structure of the chart by corner.  Half-edge `3f + e` is corner
+/// `2 - e` (a, b, c) of face `f` (`HalfEdgeMesh::writeFace`); each merge class of mergeCorners is one
+/// local vertex.  Inter-chart and seam edges merge nothing, so they surface as the boundary of the
+/// local mesh: the corner-wise equivalent of `CChartification::CutBoundaryPath` +
+/// `CreateVertexStructure` (`legacy2003/chartification/cchartification.cpp:395-500`).
+/// Local vertices are numbered in first-encounter order of the face scan (corner a, b, c).
+static CornerMesh buildCornerMesh(const HalfEdgeMesh &mesh, const Chart &chart) {
+    const std::size_t numFaces = chart.faces.size();
+
+    // which corners are one vertex
+    DisjointSet corners = mergeCorners(mesh, chart);
+
+    CornerMesh out;
+    out.localTri.resize(numFaces * 3);
+
+    // one local label per merge class, keyed by the class root
+    std::vector<int> labelOfRoot(numFaces * 3, -1);
+
+    // scan the corners in face order; corner k of face i is slot 2 - k
+    for (std::size_t corner = 0; corner < numFaces * 3; ++corner) {
+        const std::size_t i = corner / 3;
+        const std::size_t k = corner % 3;
+        const int         slot = 3 * static_cast<int>(i) + 2 - static_cast<int>(k);
+        int              &label = labelOfRoot[static_cast<std::size_t>(corners.find(slot))];
+
+        // first corner of a class opens a new local vertex
+        if (label < 0) {
+            label = static_cast<int>(out.localToMesh.size());
+            const HeIndex h = static_cast<HeIndex>(chart.faces[i]) * 3 + static_cast<HeIndex>(2 - k);
+            out.localToMesh.push_back(static_cast<int>(mesh.halfedge(h).end));
+        }
+        out.localTri[corner] = label;
+    }
+    return out;
+}
+
+
+/// The two boundary vertices farthest apart in 3D space, as LOCAL indices.  The boundary is the cut
+/// local mesh's own (`boundaryPointIndices()`): the implicit `sym == NULL` boundary left by
+/// `CutBoundaryPath` (`cchartification.cpp:484-500`).  The O(n^2) farthest-pair search is `Diameter()`
+/// (`cconformalmapper.cpp:48-82`); the pair is pinned as in `InitPinned()` (`:135-193`).
+/// Throws std::runtime_error if a boundary index lies outside the local vertex range.
+/// A chart without two boundary vertices (closed) falls back to local vertices 0 and 1.
+static std::pair<int, int> findPinVertices(const HalfEdgeMesh     &localMesh,
+                                           const std::vector<int> &localToMesh,
+                                           const MeshData         &data) {
+    const int numLocal = static_cast<int>(localToMesh.size());
+
+    // the cut mesh's own boundary, guarded against indices outside the local range
+    std::vector<int> bverts;
+    for (const std::uint32_t li : localMesh.boundaryPointIndices()) {
+        if (li >= localToMesh.size()) {
+            throw std::runtime_error("findPinVertices: boundary vertex " + std::to_string(li) +
+                                     " outside the chart's local vertices");
+        }
+        bverts.push_back(static_cast<int>(li));
+    }
+
+    // closed chart: no boundary to pick from, any two vertices will do
+    if (bverts.size() < 2) {
+        bverts.clear();
+        bverts.push_back(0);
+        if (numLocal >= 2) {
+            bverts.push_back(1);
+        }
+    }
+
+    const auto pos = [&](int local) {
+        return vertexPos(data, localToMesh[static_cast<std::size_t>(local)]);
+    };
+
+    // O(n^2) scan for the farthest pair; strict '>' keeps the first pair on ties
+    int   pin0 = bverts[0];
+    int   pin1 = bverts.size() > 1 ? bverts[1] : bverts[0];
+    float maxDist = 0.0f;
+    for (std::size_t ii = 0; ii < bverts.size(); ++ii) {
+        const math::Vec3f pi = pos(bverts[ii]);
+        for (std::size_t jj = ii + 1; jj < bverts.size(); ++jj) {
+            const float d = (pos(bverts[jj]) - pi).length();
+            if (d > maxDist) {
+                maxDist = d;
+                pin0 = bverts[ii];
+                pin1 = bverts[jj];
             }
-            return it->second;
-        };
-        const int la = localAt(va);
-        const int lb = localAt(vb);
-        const int lc = localAt(vc);
+        }
+    }
+    return { pin0, pin1 };
+}
 
-        const decimate::math::Vec3<float> posA = vertexPos(data, va);
-        const decimate::math::Vec3<float> posB = vertexPos(data, vb);
-        const decimate::math::Vec3<float> posC = vertexPos(data, vc);
+
+/// Assemble the LSCM normal equations AᵀAx = Aᵀb for one chart: per triangle, the complex
+/// Cauchy-Riemann gradients (Gram-Schmidt in the tangent plane) are accumulated into `ata` and `atb`.
+/// Pinned-vertex contributions are folded into `atb` immediately.
+/// Ported from CConformalMapper::Parametrize (cconformalmapper.cpp:268–370).
+static void assembleLSCMSystem(const Chart                         &chart,
+                               const MeshData                      &data,
+                               const std::vector<int>              &localTri,
+                               const std::vector<int>              &freeIdx,
+                               const PinState                      &pins,
+                               std::vector<Eigen::Triplet<double>> &ata,
+                               std::vector<double>                 &atb) {
+    for (std::size_t i = 0; i < chart.faces.size(); ++i) {
+        // mesh vertex ids and local ids of the triangle's corners
+        const int base = chart.faces[i] * 3;
+        const int va = data.indices[static_cast<std::size_t>(base + 0)];
+        const int vb = data.indices[static_cast<std::size_t>(base + 1)];
+        const int vc = data.indices[static_cast<std::size_t>(base + 2)];
+        const int la = localTri[3 * i + 0];
+        const int lb = localTri[3 * i + 1];
+        const int lc = localTri[3 * i + 2];
+
+        const math::Vec3f posA = vertexPos(data, va);
+        const math::Vec3f posB = vertexPos(data, vb);
+        const math::Vec3f posC = vertexPos(data, vc);
 
         // Gram-Schmidt orthonormalization (ports Gradient() + orthonormal()).
-        const decimate::math::Vec3<float> ba = posB - posA;
-        const decimate::math::Vec3<float> ca = posC - posA;
-        decimate::math::Vec3<float> e1 = ba.normalized();
-        decimate::math::Vec3<float> e2 = ca - e1 * e1.dot(ca);
+        const math::Vec3f ba = posB - posA;
+        const math::Vec3f ca = posC - posA;
+        const math::Vec3f e1 = ba.normalized();
+        math::Vec3f       e2 = ca - e1 * e1.dot(ca);
         e2.normalize();
 
-        // Triangle 2D coordinates in the orthonormal tangent basis.
+        // Triangle 2D coordinates in the orthonormal tangent basis (corner a sits at the origin).
         constexpr float x1 = 0.0f;
         constexpr float y1 = 0.0f;
         const float     x2 = ba.dot(e1);
@@ -266,20 +338,23 @@ void assembleLSCMSystem(const Chart&                          chart,
         const float     x3 = ca.dot(e1);
         const float     y3 = ca.dot(e2);
 
-        const float dT = (x1 * y2 - y1 * x2) + (x2 * y3 - y2 * x3)
-                       + (x3 * y1 - y3 * x1);
-        if (std::abs(dT) < 1e-12f) { continue; }  // degenerate — skip
+        // Degenerate triangle: no usable gradient, contributes no row.
+        const float dT = (x1 * y2 - y1 * x2) + (x2 * y3 - y2 * x3) + (x3 * y1 - y3 * x1);
+        if (std::abs(dT) < 1.0e-12f) {
+            continue;
+        }
         const float sqrtDT = std::sqrt(std::abs(dT));
 
         // Complex Cauchy-Riemann gradients w = (wr, wi) / sqrtDT.
-        const int    lids[3] = {la, lb, lc};
-        const double wrs[3]  = {static_cast<double>((x3 - x2) / sqrtDT),
-                                 static_cast<double>((x1 - x3) / sqrtDT),
-                                 static_cast<double>((x2 - x1) / sqrtDT)};
-        const double wis[3]  = {static_cast<double>((y3 - y2) / sqrtDT),
-                                 static_cast<double>((y1 - y3) / sqrtDT),
-                                 static_cast<double>((y2 - y1) / sqrtDT)};
+        const int    lids[3] = { la, lb, lc };
+        const double wrs[3] = { static_cast<double>((x3 - x2) / sqrtDT),
+                                static_cast<double>((x1 - x3) / sqrtDT),
+                                static_cast<double>((x2 - x1) / sqrtDT) };
+        const double wis[3] = { static_cast<double>((y3 - y2) / sqrtDT),
+                                static_cast<double>((y1 - y3) / sqrtDT),
+                                static_cast<double>((y2 - y1) / sqrtDT) };
 
+        // One real and one imaginary equation per triangle, as sparse rows over the free unknowns.
         std::vector<RowEntry> rowReal;
         std::vector<RowEntry> rowImag;
         rowReal.reserve(6);
@@ -287,45 +362,45 @@ void assembleLSCMSystem(const Chart&                          chart,
         double rhsReal = 0.0;
         double rhsImag = 0.0;
 
+        // A pinned corner has a known UV, so it moves to the right-hand side; a free corner becomes row entries.
         for (int k = 0; k < 3; ++k) {
-            const int lid = lids[k];
+            const int    lid = lids[k];
             const double wr = wrs[k];
             const double wi = wis[k];
 
             if (lid == pins.pin0Local) {
                 rhsReal -= wr * pins.uPin0 + (-wi) * pins.vPin0;
-                rhsImag -= wi * pins.uPin0 +   wr  * pins.vPin0;
+                rhsImag -= wi * pins.uPin0 + wr * pins.vPin0;
             } else if (lid == pins.pin1Local) {
                 rhsReal -= wr * pins.uPin1 + (-wi) * pins.vPin1;
-                rhsImag -= wi * pins.uPin1 +   wr  * pins.vPin1;
+                rhsImag -= wi * pins.uPin1 + wr * pins.vPin1;
             } else {
                 const int fi = freeIdx[static_cast<std::size_t>(lid)];
-                rowReal.push_back({fi,              wr});
-                rowReal.push_back({fi + pins.numFree, -wi});
-                rowImag.push_back({fi,              wi});
-                rowImag.push_back({fi + pins.numFree,  wr});
+                rowReal.push_back({ fi, wr });
+                rowReal.push_back({ fi + pins.numFree, -wi });
+                rowImag.push_back({ fi, wi });
+                rowImag.push_back({ fi + pins.numFree, wr });
             }
         }
-        accumRow(cg, atb, rowReal, rhsReal);
-        accumRow(cg, atb, rowImag, rhsImag);
+
+        accumRow(ata, atb, rowReal, rhsReal);
+        accumRow(ata, atb, rowImag, rhsImag);
     }
 }
 
-/// @brief Write CG solution `x` back into `uv` for every local vertex.
-///
-/// Free vertices: u = x[fi], v = x[fi + numFree].
-/// Pinned vertices: hardcoded UV from `pins`.
-///
-/// Ports CConformalMapper::CopyResult (cconformalmapper.cpp:36-42).
-void backSubstituteUVs(const std::vector<double>&    x,
-                               const std::vector<int>&       freeIdx,
-                               const PinState&               pins,
-                               int                           numLocal,
-                               std::vector<decimate::math::Vec2<float>>& uv) {
+
+/// Write the solution `x` back into `uv` for every local vertex: free vertices get
+/// u = x[fi], v = x[fi + numFree]; pinned vertices get their fixed UV from `pins`.
+/// Ports CConformalMapper::CopyResult (cconformalmapper.cpp:35-42).
+static void backSubstituteUVs(const std::vector<double> &x,
+                              const std::vector<int>    &freeIdx,
+                              const PinState            &pins,
+                              int                        numLocal,
+                              std::vector<math::Vec2f>  &uv) {
     for (int li = 0; li < numLocal; ++li) {
+        // pinned vertices were never unknowns: they take their fixed UV, the rest read the solution
         float u = 0.0f;
         float v = 0.0f;
-
         if (li == pins.pin0Local) {
             u = static_cast<float>(pins.uPin0);
             v = static_cast<float>(pins.vPin0);
@@ -337,99 +412,173 @@ void backSubstituteUVs(const std::vector<double>&    x,
             u = static_cast<float>(x[static_cast<std::size_t>(fi)]);
             v = static_cast<float>(x[static_cast<std::size_t>(fi + pins.numFree)]);
         }
-        uv[static_cast<std::size_t>(li)] = decimate::math::Vec2<float>{u, v};
+
+        uv[static_cast<std::size_t>(li)] = math::Vec2f { u, v };
     }
 }
 
-}  // anonymous namespace
 
-// ---------------------------------------------------------------------------
-// flatten — public entry point
-// ---------------------------------------------------------------------------
+/// Signed doubled area of triangle abc in UV space, accumulated in double; positive when abc is counter-clockwise.
+[[nodiscard]] static double orient(const UV &a, const UV &b, const UV &c) noexcept {
+    return static_cast<double>(b.x - a.x) * (c.y - a.y) - static_cast<double>(b.y - a.y) * (c.x - a.x);
+}
 
-/// @brief LSCM-flatten a single chart into 2D UV space.
-///
-/// Behavior-preserving port of CConformalMapper::Parametrize(CChart*)
-/// (cconformalmapper.cpp:247–322) combined with its helper methods
-/// Gradient() (lines 89–126), Diameter() (lines 48–82), and
-/// InitPinned() (lines 135–193).
-///
-/// The normal-equation assembly replaces the legacy SMCR two-matrix approach
-/// (am for free, bm for pinned) with direct accumulation into the
-/// ConjugateGradientSolver, which is the correct solver for this system
-/// class (NOT the Spec-05 SMat / Gauss-Seidel path).
-HalfEdgeChart flatten([[maybe_unused]] const HalfEdgeMesh& mesh,
-                      const MeshData&                       data,
-                      const Chart&                          chart) {
+
+/// Do segments ab and cd cross properly (endpoints shared by the caller are excluded)?
+[[nodiscard]] static bool crosses(const UV &a, const UV &b, const UV &c, const UV &d) noexcept {
+    return segmentsCross(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y);
+}
+
+
+/// Flattening quality in O(n + B^2) (n triangles, B boundary edges; the B^2 is the boundary
+/// self-crossing loop): flipped/degenerate triangles against the chart's orientation (sign of the summed
+/// signed area), and boundary edges crossing each other.  Disk + no flip + simple boundary => the map
+/// is injective.  Shared with the bijective mapper via chart_quality.h.
+void measureQuality(HalfEdgeChart &ac) {
+    const HalfEdgeMesh &m = ac.mesh;
+    const int           nf = static_cast<int>(m.faceCount());
+    ac.flippedTriangles = 0;
+    ac.boundarySimple = true;
+
+    // The summed signed area fixes the chart's orientation, whichever way the flattening came out.
+    double total = 0.0;
+    for (int f = 0; f < nf; ++f) {
+        total += orient(ac.uv[localCorner(ac, f, 0)], ac.uv[localCorner(ac, f, 1)], ac.uv[localCorner(ac, f, 2)]);
+    }
+
+    // A triangle against that orientation, or with no area (NaN included), is flipped.
+    const double sign = total < 0.0 ? -1.0 : 1.0;
+    for (int f = 0; f < nf; ++f) {
+        const double a = sign * orient(ac.uv[localCorner(ac, f, 0)], ac.uv[localCorner(ac, f, 1)],
+                                       ac.uv[localCorner(ac, f, 2)]);
+        if (!(a > 0.0)) {
+            ++ac.flippedTriangles;
+        }
+    }
+
+    // Boundary edges (no sym) as (origin, end) pairs.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+    for (HeIndex h = 0; h < m.halfEdgeCount(); ++h) {
+        if (m.sym(h) == kNoHalfedge) {
+            edges.emplace_back(m.halfedge(m.next(m.next(h))).end, m.halfedge(h).end);
+        }
+    }
+
+    // Every edge pair once; the first proper crossing makes the boundary non-simple.
+    for (std::size_t i = 0; i < edges.size() && ac.boundarySimple; ++i) {
+        const auto [a, b] = edges[i];
+        for (std::size_t j = i + 1; j < edges.size(); ++j) {
+            const auto [c, d] = edges[j];
+            if (a == c || a == d || b == c || b == d) {
+                continue; // neighbours share an endpoint and touch there by construction
+            }
+            if (crosses(ac.uv[a], ac.uv[b], ac.uv[c], ac.uv[d])) {
+                ac.boundarySimple = false;
+                break;
+            }
+        }
+    }
+}
+
+
+/// Ridge added to K's diagonal when the plain factorization fails, relative to K's largest diagonal
+/// entry (the retry of `src/seam/erase.cpp`'s Solver).  K is singular to working precision when a
+/// vertex's incident triangles were all skipped as degenerate (`|dT| < 1.0e-12f`, zero rows); the
+/// 2003 CG tolerated that, a direct solve does not.
+constexpr double kRidge = 1e-9;
+
+/// Solve K x = atb by sparse LDLT; on failure retry once with `K + ridge * I`.  The ridge leaves a
+/// vertex without any equation at its right-hand side (0), so the solution stays finite.
+/// Returns false when both factorizations fail; x is then left as given (zeros).
+static bool solveNormalEquations(const Eigen::SparseMatrix<double> &k, const std::vector<double> &atb,
+                                 std::vector<double> &x) {
+    const auto                                         n = static_cast<Eigen::Index>(atb.size());
+    const Eigen::Map<const Eigen::VectorXd>            rhs(atb.data(), n);
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> ldlt(k);
+
+    // Plain factorization failed: regularize the diagonal relative to its largest entry and retry once.
+    if (ldlt.info() != Eigen::Success) {
+        double maxDiag = 0.0;
+        for (Eigen::Index i = 0; i < n; ++i) {
+            maxDiag = std::max(maxDiag, k.coeff(i, i));
+        }
+        Eigen::SparseMatrix<double> ridge(n, n);
+        ridge.setIdentity();
+        ldlt.compute(k + kRidge * (maxDiag > 0.0 ? maxDiag : 1.0) * ridge);
+    }
+
+    if (ldlt.info() != Eigen::Success) {
+        return false;
+    }
+
+    Eigen::Map<Eigen::VectorXd>(x.data(), n) = ldlt.solve(rhs);
+    return true;
+}
+
+
+/// LSCM-flatten a single chart into 2D UV space.  Port of CConformalMapper::Parametrize(CChart*)
+/// (cconformalmapper.cpp:247-322) with its helpers Gradient() (:89-126), Diameter() (:48-82) and
+/// InitPinned() (:135-193).  Instead of the 2003 two-matrix system (am free, bm pinned) the normal
+/// equations AᵀA are accumulated as sparse triplets and factorized by SimplicialLDLT.
+HalfEdgeChart flatten(const HalfEdgeMesh &mesh,
+                      const MeshData     &data,
+                      const Chart        &chart) {
     HalfEdgeChart result;
     result.faces = chart.faces;
 
+    // nothing to flatten
     if (chart.faces.empty()) {
         return result;
     }
 
-    // Step 1: Collect the unique local vertex set over all chart faces.
-    const LocalVertexSet vs       = collectLocalVertices(chart, data);
-    const int            numLocal = static_cast<int>(vs.meshId.size());
-    result.localToMesh = vs.meshId;
+    // Local vertices by corner (cut along chart.seamHalfEdges) and the owned local half-edge mesh
+    // built from them; boundary and adjacency are queries on it.
+    // reinterpret_cast is safe: Face is {int a, b, c} with the layout of three consecutive ints
+    // (mesh_types.h; used identically in tests/half_edge_boundary_test.cpp::makeHem).
+    CornerMesh cm = buildCornerMesh(mesh, chart);
+    const int  numLocal = static_cast<int>(cm.localToMesh.size());
+    result.localToMesh = std::move(cm.localToMesh);
     result.uv.resize(static_cast<std::size_t>(numLocal));
-
-    // Step 2: Build the per-face local-vertex index array (3 ints per face).
-    // This is the face array fed to HalfEdgeMesh::create — the local triangulation
-    // that makes boundary and adjacency derivable as queries.
-    // `Face` is 3 contiguous ints (mesh_types.h:18), same layout as int[3].
-    std::vector<int> localTri;
-    localTri.reserve(chart.faces.size() * 3);
-    for (int fid : chart.faces) {
-        const int base = fid * 3;
-        for (int k = 0; k < 3; ++k) {
-            const int vid = data.indices[static_cast<std::size_t>(base + k)];
-            localTri.push_back(vs.localOf.at(vid));
-        }
-    }
-
-    // Step 3: Build the owned local HalfEdgeMesh from the local triangulation.
-    // reinterpret_cast is safe: Face is {int a, b, c} with the same layout as
-    // three consecutive ints (confirmed in mesh_types.h and used identically in
-    // tests/half_edge_boundary_test.cpp::makeHem).
-    const int numLocalFaces = static_cast<int>(chart.faces.size());
     result.mesh = HalfEdgeMesh::create(
-        numLocal, numLocalFaces,
-        reinterpret_cast<const decimate::Face*>(localTri.data()));
+        numLocal, static_cast<int>(chart.faces.size()),
+        reinterpret_cast<const decimate::Face *>(cm.localTri.data()));
 
-    // Step 4: Find the two pin vertices from the cut mesh boundary.
-    // Uses result.mesh.boundaryPointIndices() — the faithful port of
-    // CChartification::CreateVertexStructure (cchartification.cpp:395), where
-    // CutBoundaryPath nulls sym on boundary half-edges (cchartification.cpp:484+)
-    // making the boundary implicit (sym==NULL).  boundaryPointIndices() walks
-    // exactly that implicit boundary, matching the 2003 Boundaries()→packer
-    // hand-off.  This is the correct boundary for pin selection (Spec 09-01 AMENDMENT).
-    const auto [pin0Local, pin1Local] =
-        findPinVertices(result.mesh, result.localToMesh, data, vs);
+    // Pins come from the cut mesh boundary (Spec 09-01 amendment).
+    const auto [pin0Local, pin1Local] = findPinVertices(result.mesh, result.localToMesh, data);
 
-    // Step 5: Build free-vertex index remapping (freeIdx[li] = free index, or -1).
+    // Pinned vertices are not unknowns: remap the rest densely (freeIdx[li] = free index, or -1).
     std::vector<int> freeIdx(static_cast<std::size_t>(numLocal), -1);
-    int numFree = 0;
+    int              numFree = 0;
     for (int li = 0; li < numLocal; ++li) {
         if (li != pin0Local && li != pin1Local) {
             freeIdx[static_cast<std::size_t>(li)] = numFree++;
         }
     }
 
-    // Steps 6-7: Assemble LSCM system, solve via CG, back-substitute UVs.
-    // Pinned UV values (legacy cconformalmapper.cpp:160-163):
-    //   pin0 → UV (0, 0),  pin1 → UV (1, 1)
-    const PinState pins{pin0Local, pin1Local, numFree};
-    const int      sysSize = 2 * numFree;
-    decimate::math::ConjugateGradientSolver cg(sysSize);
-    std::vector<double> atb(static_cast<std::size_t>(sysSize), 0.0);
-    assembleLSCMSystem(chart, data, vs.localOf, freeIdx, pins, cg, atb);
-    for (int col = 0; col < sysSize; ++col) {
-        cg.setRhs(col, atb[static_cast<std::size_t>(col)]);
-    }
-    const std::vector<double> x = cg.solve(1e-12, 15000);
+    // Assemble the LSCM system.
+    // Pinned UV values (legacy cconformalmapper.cpp:160-163): pin0 -> UV (0, 0), pin1 -> UV (1, 1).
+    const PinState                      pins { pin0Local, pin1Local, numFree };
+    const int                           sysSize = 2 * numFree;
+    std::vector<Eigen::Triplet<double>> ata;
+    std::vector<double>                 atb(static_cast<std::size_t>(sysSize), 0.0);
+    assembleLSCMSystem(chart, data, cm.localTri, freeIdx, pins, ata, atb);
+
+    // Solve by sparse Cholesky.
+    Eigen::SparseMatrix<double> k(sysSize, sysSize);
+    k.setFromTriplets(ata.begin(), ata.end()); // sums duplicates, as addEntry accumulated
+    std::vector<double> x(static_cast<std::size_t>(sysSize), 0.0);
+    const bool          solved = solveNormalEquations(k, atb, x);
+
+    // Back-substitute the UVs and grade the result.
     backSubstituteUVs(x, freeIdx, pins, numLocal, result.uv);
+    measureQuality(result);
+
+    if (!solved) {
+        // Defined result: free vertices at (0,0), and the chart is never reported injective.
+        result.flippedTriangles = std::max(result.flippedTriangles, 1);
+    }
     return result;
 }
 
-}  // namespace decimate::chart
+
+} // namespace decimate::chart

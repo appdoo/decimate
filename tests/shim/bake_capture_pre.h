@@ -16,8 +16,8 @@
 // -- Block windows.h / utility.h
 #ifndef UTILITY_H
 #define UTILITY_H
-void setup_timer();
-void start_timer();
+void   setup_timer();
+void   start_timer();
 double stop_timer();
 #endif
 

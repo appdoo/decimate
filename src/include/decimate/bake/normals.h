@@ -4,7 +4,7 @@
 /// @file normals.h
 /// @brief Per-vertex normal computation (Spec 10 Step 1).
 ///
-/// Ports `createNormals()` from `legacy/main.cpp:87-115` into pure C++20.
+/// Ports `createNormals()` from `legacy2003/main.cpp:87-108` into pure C++20.
 ///
 /// ## EqualUnit — the 2003 algorithm (default, golden-pinned)
 ///
@@ -43,8 +43,8 @@ namespace decimate::bake {
 ///              Tested separately (B3). MUST NOT replace EqualUnit in the
 ///              behavior-preserving pipeline (anti-pattern 11 / BLOCK).
 enum class Weighting {
-    EqualUnit,  ///< Equal-weight (2003 legacy default).
-    Area,       ///< Area-weighted (alternative mode, not the golden path).
+    EqualUnit, ///< Equal-weight (2003 legacy default).
+    Area,      ///< Area-weighted (alternative mode, not the golden path).
 };
 
 /// @brief Compute per-vertex normals for a triangle mesh.
@@ -52,14 +52,14 @@ enum class Weighting {
 /// @param data   Source mesh: `positions` (3 floats/vertex, packed) and
 ///               `indices` (3 ints/face, packed, 0-based).
 /// @param w      Weighting strategy (default `EqualUnit` — the golden path).
-/// @returns      One `Vec3<float>` per vertex (size == positions.size()).
+/// @returns      One `Vec3f` per vertex (size == positions.size()).
 ///               Zero-length normals are possible for isolated/degenerate
 ///               vertices; consumers that require unit normals must normalize.
 ///
 /// @pre  `data.indices.size() % 3 == 0`.
 /// @pre  Every index in `data.indices` is in `[0, data.positions.size())`.
-[[nodiscard]] std::vector<decimate::math::Vec3<float>> computeVertexNormals(
-    const decimate::MeshData& data,
-    Weighting             w = Weighting::EqualUnit);
+[[nodiscard]] std::vector<math::Vec3f> computeVertexNormals(
+    const decimate::MeshData &data,
+    Weighting                 w = Weighting::EqualUnit);
 
-}  // namespace decimate::bake
+} // namespace decimate::bake

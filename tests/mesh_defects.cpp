@@ -40,30 +40,34 @@ using decimate::math::Vec3f;
 
 namespace {
 
-// Undirected edge key (min,max) packed into 64 bits.
+/// Undirected edge key (min,max) packed into 64 bits.
 std::uint64_t edgeKey(int a, int b) {
     const std::uint32_t lo = static_cast<std::uint32_t>(std::min(a, b));
     const std::uint32_t hi = static_cast<std::uint32_t>(std::max(a, b));
     return (static_cast<std::uint64_t>(hi) << 32) | lo;
 }
 
+
+/// Defect counters for one reduced mesh, plus its bbox for the normalized-height listing.
 struct DefectReport {
     int   nonManifoldEdges = 0;
-    int   boundaryEdges    = 0;
-    int   pinchVerts       = 0;
-    int   degenFaces       = 0;
-    int   spikes           = 0;
-    int   flippedEdges     = 0;  ///< interior edges traversed the SAME way by both faces
-    int   foldEdges        = 0;  ///< interior edges where adjacent faces crease sharply back
-    int   slivers          = 0;  ///< near-degenerate (thin) triangles
-    Vec3f lo;                    ///< output bbox, for normalized-height reporting
+    int   boundaryEdges = 0;
+    int   pinchVerts = 0;
+    int   degenFaces = 0;
+    int   spikes = 0;
+    int   flippedEdges = 0; ///< interior edges traversed the SAME way by both faces
+    int   foldEdges = 0;    ///< interior edges where adjacent faces crease sharply back
+    int   slivers = 0;      ///< near-degenerate (thin) triangles
+    Vec3f lo;               ///< output bbox, for normalized-height reporting
     Vec3f hi;
 };
 
-// Disjoint-set over a small local index space (incident-face count).
+
+/// Disjoint-set over a small local index space (incident-face count).
 struct DSU {
     std::vector<int> parent;
-    explicit DSU(int n) : parent(static_cast<std::size_t>(n)) {
+    explicit DSU(int n)
+        : parent(static_cast<std::size_t>(n)) {
         std::iota(parent.begin(), parent.end(), 0);
     }
     int find(int x) {
@@ -73,40 +77,52 @@ struct DSU {
         }
         return x;
     }
-    void join(int a, int b) { parent[static_cast<std::size_t>(find(a))] = find(b); }
+    void join(int a, int b) {
+        parent[static_cast<std::size_t>(find(a))] = find(b);
+    }
 };
 
-void printDefect(const char* kind, const Vec3f& p, const Vec3f& lo, const Vec3f& hi, int& shown) {
+
+/// Prints one defect with its position and normalized height, at most 12 per kind.
+void printDefect(const char *kind, const Vec3f &p, const Vec3f &lo, const Vec3f &hi, int &shown) {
     if (shown >= 12) {
-        return;  // cap the per-kind listing; the count is the headline
+        return; // cap the per-kind listing; the count is the headline
     }
-    const float yspan = std::max(1e-9F, hi.y - lo.y);
-    const float yn    = (p.y - lo.y) / yspan;
+    const float yspan = std::max(1e-9f, hi.y - lo.y);
+    const float yn = (p.y - lo.y) / yspan;
     std::printf("    %-14s (% .4f % .4f % .4f)  y'=%.2f\n", kind, p.x, p.y, p.z, yn);
     ++shown;
 }
 
+
+/// Axis-aligned bounding box.
 struct Bounds {
     Vec3f lo;
     Vec3f hi;
 };
-Bounds bboxOf(const std::vector<Vec3f>& pts) {
-    Bounds b{pts.empty() ? Vec3f{} : pts[0], pts.empty() ? Vec3f{} : pts[0]};
-    for (const Vec3f& p : pts) {
-        b.lo = {std::min(b.lo.x, p.x), std::min(b.lo.y, p.y), std::min(b.lo.z, p.z)};
-        b.hi = {std::max(b.hi.x, p.x), std::max(b.hi.y, p.y), std::max(b.hi.z, p.z)};
+
+
+/// Bounding box of @p pts (zero box for an empty list).
+Bounds bboxOf(const std::vector<Vec3f> &pts) {
+    Bounds b { pts.empty() ? Vec3f {} : pts[0], pts.empty() ? Vec3f {} : pts[0] };
+    for (const Vec3f &p : pts) {
+        b.lo = { std::min(b.lo.x, p.x), std::min(b.lo.y, p.y), std::min(b.lo.z, p.z) };
+        b.hi = { std::max(b.hi.x, p.x), std::max(b.hi.y, p.y), std::max(b.hi.z, p.z) };
     }
     return b;
 }
 
-// Edge-incidence + per-vertex incident-face lists, in one O(F) pass.
-void scanEdges(const MeshData& out, DefectReport& rep,
-               std::unordered_map<std::uint64_t, int>& edgeCount,
-               std::vector<std::vector<int>>& vFaces) {
+
+/// Edge-incidence + per-vertex incident-face lists, in one O(F) pass.
+void scanEdges(const MeshData &out, DefectReport &rep,
+               std::unordered_map<std::uint64_t, int> &edgeCount,
+               std::vector<std::vector<int>>          &vFaces) {
     const int outF = static_cast<int>(out.indices.size()) / 3;
     for (int f = 0; f < outF; ++f) {
-        const std::size_t b  = static_cast<std::size_t>(f) * 3;
+        const std::size_t b = static_cast<std::size_t>(f) * 3;
         const int         a0 = out.indices[b], a1 = out.indices[b + 1], a2 = out.indices[b + 2];
+
+        // Degenerate faces would pollute the edge counts, so they are counted and skipped.
         if (a0 == a1 || a1 == a2 || a0 == a2) {
             ++rep.degenFaces;
             continue;
@@ -118,8 +134,10 @@ void scanEdges(const MeshData& out, DefectReport& rep,
         vFaces[static_cast<std::size_t>(a1)].push_back(f);
         vFaces[static_cast<std::size_t>(a2)].push_back(f);
     }
+
+    // 1 use = boundary, >= 3 = non-manifold; the lower vertex of the key locates the defect.
     int shown = 0;
-    for (const auto& [key, count] : edgeCount) {
+    for (const auto &[key, count] : edgeCount) {
         if (count == 1) {
             ++rep.boundaryEdges;
         } else if (count >= 3) {
@@ -131,11 +149,14 @@ void scanEdges(const MeshData& out, DefectReport& rep,
     }
 }
 
-// A vertex is a pinch (bowtie) when its incident faces form more than one fan:
-// group faces by the spoke edge (v,x) they share, union, count components.
-bool isPinch(const MeshData& out, int v, const std::vector<int>& fs) {
+
+/// A vertex is a pinch (bowtie) when its incident faces form more than one fan:
+/// group faces by the spoke edge (v,x) they share, union, count components.
+bool isPinch(const MeshData &out, int v, const std::vector<int> &fs) {
     DSU                          dsu(static_cast<int>(fs.size()));
-    std::unordered_map<int, int> spokeOwner;  // other-vertex x -> local face idx
+    std::unordered_map<int, int> spokeOwner; // other-vertex x -> local face idx
+
+    // Two faces sharing a spoke (v,x) belong to the same fan.
     for (int li = 0; li < static_cast<int>(fs.size()); ++li) {
         const std::size_t b = static_cast<std::size_t>(fs[static_cast<std::size_t>(li)]) * 3;
         for (int k = 0; k < 3; ++k) {
@@ -149,6 +170,8 @@ bool isPinch(const MeshData& out, int v, const std::vector<int>& fs) {
             }
         }
     }
+
+    // More than one component = more than one fan.
     int roots = 0;
     for (int li = 0; li < static_cast<int>(fs.size()); ++li) {
         roots += (dsu.find(li) == li) ? 1 : 0;
@@ -156,11 +179,13 @@ bool isPinch(const MeshData& out, int v, const std::vector<int>& fs) {
     return roots > 1;
 }
 
-void scanPinches(const MeshData& out, DefectReport& rep,
-                 const std::vector<std::vector<int>>& vFaces) {
+
+/// Counts pinch (bowtie) vertices into @p rep.pinchVerts.
+void scanPinches(const MeshData &out, DefectReport &rep,
+                 const std::vector<std::vector<int>> &vFaces) {
     int shown = 0;
     for (int v = 0; v < static_cast<int>(out.positions.size()); ++v) {
-        const std::vector<int>& fs = vFaces[static_cast<std::size_t>(v)];
+        const std::vector<int> &fs = vFaces[static_cast<std::size_t>(v)];
         if (fs.size() >= 2 && isPinch(out, v, fs)) {
             ++rep.pinchVerts;
             printDefect("pinch-vert", out.positions[static_cast<std::size_t>(v)], rep.lo, rep.hi,
@@ -169,16 +194,19 @@ void scanPinches(const MeshData& out, DefectReport& rep,
     }
 }
 
-// An output vertex whose nearest INPUT vertex is > 2% of the bbox diagonal away
-// has been flung off the surface — a spike.
-void scanSpikes(const MeshData& in, const MeshData& out, DefectReport& rep) {
-    const Bounds  ib      = bboxOf(in.positions);
-    const double  diag    = std::max(1e-9, static_cast<double>((ib.hi - ib.lo).length()));
-    const double  thresh2 = (0.02 * diag) * (0.02 * diag);
-    int           shown   = 0;
-    for (const Vec3f& q : out.positions) {
+
+/// An output vertex whose nearest INPUT vertex is > 2% of the bbox diagonal away
+/// has been flung off the surface — a spike.
+void scanSpikes(const MeshData &in, const MeshData &out, DefectReport &rep) {
+    const Bounds ib = bboxOf(in.positions);
+    const double diag = std::max(1e-9, static_cast<double>((ib.hi - ib.lo).length()));
+    const double thresh2 = (0.02 * diag) * (0.02 * diag);
+    int          shown = 0;
+
+    // Brute force nearest-vertex search; early exit once a vertex is close enough.
+    for (const Vec3f &q : out.positions) {
         double best = std::numeric_limits<double>::max();
-        for (const Vec3f& ip : in.positions) {
+        for (const Vec3f &ip : in.positions) {
             best = std::min(best, static_cast<double>((q - ip).lengthSquared()));
             if (best <= thresh2) {
                 break;
@@ -191,18 +219,20 @@ void scanSpikes(const MeshData& in, const MeshData& out, DefectReport& rep) {
     }
 }
 
-// Winding consistency: in a coherently-oriented mesh every directed edge (a->b)
-// appears at most once — the adjacent face traverses it as (b->a). A directed
-// edge seen twice means two neighbours are wound the same way (one is flipped),
-// which shades dark / reads as a gash even though the topology is intact.
-void scanWinding(const MeshData& out, DefectReport& rep) {
+
+/// Winding consistency: in a coherently-oriented mesh every directed edge (a->b)
+/// appears at most once — the adjacent face traverses it as (b->a). A directed
+/// edge seen twice means two neighbours are wound the same way (one is flipped),
+/// which shades dark / reads as a gash even though the topology is intact.
+void scanWinding(const MeshData &out, DefectReport &rep) {
     const int                              outF = static_cast<int>(out.indices.size()) / 3;
-    std::unordered_map<std::uint64_t, int> seen;  // packed (a<<32|b) -> face
+    std::unordered_map<std::uint64_t, int> seen; // packed (a<<32|b) -> face
     seen.reserve(out.indices.size());
+
     int shown = 0;
     for (int f = 0; f < outF; ++f) {
-        const std::size_t          b = static_cast<std::size_t>(f) * 3;
-        const std::array<int, 3>   v = {out.indices[b], out.indices[b + 1], out.indices[b + 2]};
+        const std::size_t        b = static_cast<std::size_t>(f) * 3;
+        const std::array<int, 3> v = { out.indices[b], out.indices[b + 1], out.indices[b + 2] };
         for (int k = 0; k < 3; ++k) {
             const int a0 = v[static_cast<std::size_t>(k)], a1 = v[static_cast<std::size_t>((k + 1) % 3)];
             if (a0 == a1) {
@@ -218,26 +248,32 @@ void scanWinding(const MeshData& out, DefectReport& rep) {
     }
 }
 
-Vec3f faceNormal(const MeshData& m, int f) {
+
+/// Unnormalized normal of face @p f (zero length for a degenerate face).
+Vec3f faceNormal(const MeshData &m, int f) {
     const std::size_t b = static_cast<std::size_t>(f) * 3;
-    const Vec3f&      a = m.positions[static_cast<std::size_t>(m.indices[b])];
-    const Vec3f&      p = m.positions[static_cast<std::size_t>(m.indices[b + 1])];
-    const Vec3f&      q = m.positions[static_cast<std::size_t>(m.indices[b + 2])];
+    const Vec3f      &a = m.positions[static_cast<std::size_t>(m.indices[b])];
+    const Vec3f      &p = m.positions[static_cast<std::size_t>(m.indices[b + 1])];
+    const Vec3f      &q = m.positions[static_cast<std::size_t>(m.indices[b + 2])];
     return (p - a).cross(q - a);
 }
 
-// Fold-over: an interior edge whose two faces crease sharply back toward each
-// other (normals dot < cos(threshold)). A near-180° crease is the dark "slit"
-// the eye sees and the red gash in the normal view — geometry, not topology.
-void scanFolds(const MeshData& out, DefectReport& rep,
-               const std::vector<std::vector<int>>& vFaces) {
-    std::unordered_map<std::uint64_t, int> edgeFace;  // undirected edge -> first face
+
+/// Fold-over: an interior edge whose two faces crease sharply back toward each
+/// other (normals dot < cos(threshold)). A near-180° crease is the dark "slit"
+/// the eye sees and the red gash in the normal view — geometry, not topology.
+void scanFolds(const MeshData &out, DefectReport &rep,
+               const std::vector<std::vector<int>> &vFaces) {
+    std::unordered_map<std::uint64_t, int> edgeFace; // undirected edge -> first face
     edgeFace.reserve(out.indices.size());
-    int       shown    = 0;
-    const int outF     = static_cast<int>(out.indices.size()) / 3;
+
+    int       shown = 0;
+    const int outF = static_cast<int>(out.indices.size()) / 3;
     for (int f = 0; f < outF; ++f) {
-        const std::size_t b    = static_cast<std::size_t>(f) * 3;
-        const std::array<int, 3> v = {out.indices[b], out.indices[b + 1], out.indices[b + 2]};
+        const std::size_t        b = static_cast<std::size_t>(f) * 3;
+        const std::array<int, 3> v = { out.indices[b], out.indices[b + 1], out.indices[b + 2] };
+
+        // Degenerate faces have no usable normal.
         if (v[0] == v[1] || v[1] == v[2] || v[0] == v[2]) {
             continue;
         }
@@ -248,15 +284,19 @@ void scanFolds(const MeshData& out, DefectReport& rep,
             if (inserted) {
                 continue;
             }
+
+            // Second sighting of the edge: compare the two faces' normals.
             const Vec3f n0 = faceNormal(out, it->second);
             const Vec3f n1 = faceNormal(out, f);
             const float l0 = n0.length();
             const float l1 = n1.length();
-            if (l0 < 1e-12F || l1 < 1e-12F) {
+
+            // A zero-area neighbour has no direction to compare.
+            if (l0 < 1e-12f || l1 < 1e-12f) {
                 continue;
             }
             const float cosang = n0.dot(n1) / (l0 * l1);
-            if (cosang < -0.5F) {  // > 120 degrees between normals = severe crease
+            if (cosang < -0.5f) { // > 120 degrees between normals = severe crease
                 ++rep.foldEdges;
                 printDefect("fold-crease", out.positions[static_cast<std::size_t>(v[static_cast<std::size_t>(k)])],
                             rep.lo, rep.hi, shown);
@@ -266,37 +306,40 @@ void scanFolds(const MeshData& out, DefectReport& rep,
     (void)vFaces;
 }
 
-// Sliver: a triangle whose smallest altitude is a tiny fraction of its longest
-// edge (a needle). Thin shards shade as dark lines and pollute the normal field.
-void scanSlivers(const MeshData& out, DefectReport& rep) {
-    const int outF  = static_cast<int>(out.indices.size()) / 3;
+
+/// Sliver: a triangle whose smallest altitude is a tiny fraction of its longest
+/// edge (a needle). Thin shards shade as dark lines and pollute the normal field.
+void scanSlivers(const MeshData &out, DefectReport &rep) {
+    const int outF = static_cast<int>(out.indices.size()) / 3;
     int       shown = 0;
     for (int f = 0; f < outF; ++f) {
         const std::size_t b = static_cast<std::size_t>(f) * 3;
-        const Vec3f&      a = out.positions[static_cast<std::size_t>(out.indices[b])];
-        const Vec3f&      p = out.positions[static_cast<std::size_t>(out.indices[b + 1])];
-        const Vec3f&      q = out.positions[static_cast<std::size_t>(out.indices[b + 2])];
+        const Vec3f      &a = out.positions[static_cast<std::size_t>(out.indices[b])];
+        const Vec3f      &p = out.positions[static_cast<std::size_t>(out.indices[b + 1])];
+        const Vec3f      &q = out.positions[static_cast<std::size_t>(out.indices[b + 2])];
         const float       e0 = (p - a).length();
         const float       e1 = (q - p).length();
         const float       e2 = (a - q).length();
-        const float       longest = std::max({e0, e1, e2});
-        if (longest < 1e-12F) {
+        const float       longest = std::max({ e0, e1, e2 });
+        if (longest < 1e-12f) {
             continue;
         }
-        const float area   = 0.5F * (p - a).cross(q - a).length();
-        const float minAlt = 2.0F * area / longest;  // shortest altitude
-        if (minAlt / longest < 0.02F) {              // aspect worse than 1:50
+        const float area = 0.5f * (p - a).cross(q - a).length();
+        const float minAlt = 2.0f * area / longest; // shortest altitude
+        if (minAlt / longest < 0.02f) {             // aspect worse than 1:50
             ++rep.slivers;
             printDefect("sliver", a, rep.lo, rep.hi, shown);
         }
     }
 }
 
-DefectReport analyze(const MeshData& in, const MeshData& out) {
+
+/// Runs every scan on the reduced mesh @p out (@p in is the spike reference).
+DefectReport analyze(const MeshData &in, const MeshData &out) {
     DefectReport rep;
     const Bounds ob = bboxOf(out.positions);
-    rep.lo          = ob.lo;
-    rep.hi          = ob.hi;
+    rep.lo = ob.lo;
+    rep.hi = ob.hi;
 
     std::unordered_map<std::uint64_t, int> edgeCount;
     edgeCount.reserve(out.indices.size());
@@ -311,11 +354,13 @@ DefectReport analyze(const MeshData& in, const MeshData& out) {
     return rep;
 }
 
-void run(const std::string& path, int target, double ratio) {
+
+/// Reduces one model and prints its defect report.
+void run(const std::string &path, int target, double ratio) {
     MeshData in;
     try {
         in = decimate::load(path);
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::fprintf(stderr, "skip %s: %s\n", path.c_str(), e.what());
         return;
     }
@@ -325,6 +370,8 @@ void run(const std::string& path, int target, double ratio) {
         std::fprintf(stderr, "skip %s: no faces\n", path.c_str());
         return;
     }
+
+    // An explicit --target wins over the ratio; 4 vertices is the smallest closed mesh.
     const int tgt = target > 0 ? target : std::max(4, static_cast<int>(inV * ratio));
 
     const MeshData out = decimate::reduce(in, tgt);
@@ -332,6 +379,7 @@ void run(const std::string& path, int target, double ratio) {
                 static_cast<int>(out.positions.size()), static_cast<int>(out.indices.size()) / 3);
 
     const DefectReport r = analyze(in, out);
+
     std::printf("  non-manifold edges : %d\n", r.nonManifoldEdges);
     std::printf("  pinch/bowtie verts : %d\n", r.pinchVerts);
     std::printf("  boundary edges     : %d   (original mesh boundary -> stays; growth = tearing)\n",
@@ -345,12 +393,15 @@ void run(const std::string& path, int target, double ratio) {
     std::printf("  spikes (>2%% diag)  : %d\n", r.spikes);
 }
 
-}  // namespace
+} // namespace
 
-int main(int argc, char** argv) {
-    int    target = 0;
-    double ratio  = 0.03;  // ~ the bunny guard floor, where defects showed
+/// Entry point: `mesh_defects [--target N | --ratio R] model...`.
+int main(int argc, char **argv) {
+    int                      target = 0;
+    double                   ratio = 0.03; // ~ the bunny guard floor, where defects showed
     std::vector<std::string> models;
+
+    // Anything that is not an option is a model path.
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
             target = std::atoi(argv[++i]);
@@ -364,7 +415,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: mesh_defects [--target N | --ratio R] model...\n");
         return 1;
     }
-    for (const std::string& m : models) {
+    for (const std::string &m : models) {
         run(m, target, ratio);
     }
     return 0;

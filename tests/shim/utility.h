@@ -14,8 +14,8 @@
 #define UTILITY_H
 
 // No windows.h — the three functions are enough for compile-time satisfaction.
-void setup_timer();
-void start_timer();
+void   setup_timer();
+void   start_timer();
 double stop_timer();
 
-#endif  // UTILITY_H
+#endif // UTILITY_H

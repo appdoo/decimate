@@ -27,19 +27,20 @@
 // final call into a tail call (replacing its frame), so it is pinned noinline and the call
 // is made non-tail by a side effect that follows it.
 #if defined(_MSC_VER)
-#  define MESH_TEST_NOINLINE __declspec(noinline)
+#define MESH_TEST_NOINLINE __declspec(noinline)
 #else
-#  define MESH_TEST_NOINLINE [[gnu::noinline]]
+#define MESH_TEST_NOINLINE [[gnu::noinline]]
 #endif
 
-static volatile int g_afterCapture = 0;
+static volatile int afterCapture = 0;
 
 MESH_TEST_NOINLINE static std::vector<diag::Stacktrace::Frame> captureFromKnownCallee() {
     // skip=0 keeps captureFromKnownCallee itself in the frames.
     auto frames = diag::Stacktrace::capture(0);
-    g_afterCapture = g_afterCapture + 1;  // volatile write: forbids tail-call / frame elision
+    afterCapture = afterCapture + 1; // volatile write: forbids tail-call / frame elision
     return frames;
 }
+
 
 TEST_CASE("diag::Stacktrace::capture returns frames with caller symbol", "[diag][integration]") {
     auto frames = captureFromKnownCallee();
@@ -51,12 +52,12 @@ TEST_CASE("diag::Stacktrace::capture returns frames with caller symbol", "[diag]
 
     // At least one frame must contain the known callee's name.
     const std::string needle = "captureFromKnownCallee";
-    bool found = std::any_of(frames.begin(), frames.end(), [&](const diag::Stacktrace::Frame& f) {
+    bool              found = std::any_of(frames.begin(), frames.end(), [&](const diag::Stacktrace::Frame &f) {
         return f.symbol.find(needle) != std::string::npos;
     });
 
     INFO("Captured " << frames.size() << " frame(s). Looking for '" << needle << "' in symbols:");
-    for (const auto& f : frames) {
+    for (const auto &f : frames) {
         INFO("  " << f.symbol);
     }
 

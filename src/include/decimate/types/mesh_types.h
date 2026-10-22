@@ -16,9 +16,9 @@ namespace decimate {
 /// Matches the legacy `Face { int a, b, c; }` layout so loaders can hand a
 /// `Face[]` straight to `HalfEdgeMesh::create()`.
 struct Face {
-    int a;  ///< First  vertex index.
-    int b;  ///< Second vertex index.
-    int c;  ///< Third  vertex index.
+    int a; ///< First  vertex index (0-based).
+    int b; ///< Second vertex index.
+    int c; ///< Third  vertex index.
 };
 
-}  // namespace decimate
+} // namespace decimate

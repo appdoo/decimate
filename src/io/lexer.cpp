@@ -2,7 +2,7 @@
 /// @file lexer.cpp
 /// @brief Character-by-character scanner for ASCII Open Inventor (.iv) files.
 ///
-/// Ported from legacy/loader/lexer.cpp (Spec 06, Beat 2a).
+/// Ported from legacy2003/loader/lexer.cpp (Spec 06, Beat 2a).
 ///
 /// Portability changes applied (representation, not algorithm):
 ///   - Removed #include <windows.h> (was dead: no Win32 type used anywhere).
@@ -23,67 +23,70 @@
 
 #include <decimate/io/lexer.h>
 
+#include "parse_number.h"
+
 #include <cctype>
-#include <cstdlib>
 #include <sstream>
 #include <string>
 
 namespace decimate {
 
-// ---------------------------------------------------------------------------
-// Portable case-insensitive string compare
-// ---------------------------------------------------------------------------
-// Replaces legacy stricmp (MSVC extension).  The lexer already uppercases each
-// character (c = toupper(c) in the state machine), so this is mostly defensive.
+/// Portable case-insensitive compare; replaces the MSVC-only stricmp. The lexer already
+/// uppercases each character, so this is mostly defensive.
 static bool caseInsensitiveEqual(std::string_view a, std::string_view b) {
     if (a.size() != b.size()) {
         return false;
     }
+
     for (std::size_t i = 0; i < a.size(); ++i) {
         if (std::toupper(static_cast<unsigned char>(a[i])) !=
             std::toupper(static_cast<unsigned char>(b[i]))) {
             return false;
         }
     }
+
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
 
-Lexer::Lexer(const std::string& fileName)
-    : in_(fileName) {}
+Lexer::Lexer(const std::string &fileName)
+    : in_(fileName) {
+}
 
-// Single-character punctuation tokens (state 0). Returns the token value, or
-// -1 if `c` is not a standalone punctuation character.
+
+/// Single-character punctuation tokens (state 0). Returns the token value, or
+/// -1 if `c` is not a standalone punctuation character.
 static int singleCharToken(char c) {
     switch (c) {
-        case '<': return static_cast<int>(Token::ANGLEOPEN);
-        case '>': return static_cast<int>(Token::ANGLECLOSE);
-        case '(': return static_cast<int>(Token::PARENOPEN);
-        case ')': return static_cast<int>(Token::PARENCLOSE);
-        case '[': return static_cast<int>(Token::SQUAREOPEN);
-        case ']': return static_cast<int>(Token::SQUARECLOSE);
-        case '{': return static_cast<int>(Token::BROPEN);
-        case '}': return static_cast<int>(Token::BRCLOSE);
-        case ',': return static_cast<int>(Token::COMMA);
-        case '/': return static_cast<int>(Token::SLASH);
-        default:  return -1;
+        case '<':
+            return static_cast<int>(Token::ANGLEOPEN);
+        case '>':
+            return static_cast<int>(Token::ANGLECLOSE);
+        case '(':
+            return static_cast<int>(Token::PARENOPEN);
+        case ')':
+            return static_cast<int>(Token::PARENCLOSE);
+        case '[':
+            return static_cast<int>(Token::SQUAREOPEN);
+        case ']':
+            return static_cast<int>(Token::SQUARECLOSE);
+        case '{':
+            return static_cast<int>(Token::BROPEN);
+        case '}':
+            return static_cast<int>(Token::BRCLOSE);
+        case ',':
+            return static_cast<int>(Token::COMMA);
+        case '/':
+            return static_cast<int>(Token::SLASH);
+        default:
+            return -1;
     }
 }
 
-// ---------------------------------------------------------------------------
-// lex() — tokenizer entry point
-// ---------------------------------------------------------------------------
-// Reads and uppercases one character at a time (legacy is case-insensitive),
-// classifies it, and delegates to a per-kind sub-scanner.  This is a faithful
-// restructuring of the legacy switch(status) DFA: each old state group becomes
-// one scanner (number = states 1/2/5/6, keyword = 3, string = 4) so token
-// output is byte-for-byte identical.  Helpers append to / pop from lexem_ and
-// putback() the delimiter exactly as the legacy state machine did.
 
-char Lexer::nextUpper(char& c) {
+/// Reads one character, uppercased (the scanner is case-insensitive); returns '\0' at EOF
+/// (a NUL byte in the file is indistinguishable from EOF).
+char Lexer::nextUpper(char &c) {
     if (!in_.get(c)) {
         return '\0';
     }
@@ -91,11 +94,24 @@ char Lexer::nextUpper(char& c) {
     return c;
 }
 
-// Finish scanning a number after its first character (digit or '-') is already
-// in lexem_.  Returns INT or FLOAT; putbacks the first non-number character.
+
+/// Token for a finished number lexem.  A lone '-' (no digit ever followed) is not a
+/// number: it is UNDEFINED, so match(INT) reports a parse error instead of the 0 that
+/// atoi used to read from it.
+static int numberToken(const std::string &lexem, int status) {
+    if (lexem == "-") {
+        return static_cast<int>(Token::UNDEFINED);
+    }
+    return static_cast<int>(status == 1 ? Token::INT : Token::FLOAT);
+}
+
+
+/// Finishes scanning a number after its first character (digit or '-') is already
+/// in lexem_.  Returns INT or FLOAT; puts back the first non-number character.
 int Lexer::scanNumber() {
-    int  status = 1;  // 1=int body, 2=frac, 5=exp-sign, 6=exp-digits
-    char c      = 0;
+    int  status = 1; // 1=int body, 2=frac, 5=exp-sign, 6=exp-digits
+    char c = 0;
+
     while (nextUpper(c) != '\0') {
         const bool digit = std::isdigit(static_cast<unsigned char>(c)) != 0;
         if (status == 1 && c == '.') {
@@ -106,15 +122,16 @@ int Lexer::scanNumber() {
             status = 6;
         } else if (!digit) {
             in_.putback(c);
-            return static_cast<int>(status == 1 ? Token::INT : Token::FLOAT);
+            return numberToken(lexem_, status);
         }
         lexem_ += c;
     }
-    return static_cast<int>(status == 1 ? Token::INT : Token::FLOAT);
+    return numberToken(lexem_, status);
 }
 
-// Finish scanning an alphanumeric keyword/identifier (first letter already in
-// lexem_).  Returns the registered keyword token or Token::STRING.
+
+/// Finishes scanning an alphanumeric keyword/identifier (first letter already in
+/// lexem_).  Returns the registered keyword token or Token::STRING.
 int Lexer::scanKeyword() {
     char c = 0;
     while (nextUpper(c) != '\0') {
@@ -127,15 +144,16 @@ int Lexer::scanKeyword() {
     return checkLexem(lexem_);
 }
 
-// Finish scanning a double-quoted string (opening quote already consumed).
-//
-// DELIBERATE, SAFE deviation from legacy (flagged, not silent): the 2009 state
-// machine double-appended each char and left the closing quote in the lexem
-// (a buffer quirk).  This produces the clean string content instead.  The only
-// observable difference is the text of a STRING token's lexem, which is used
-// ONLY in error messages — never for data extraction — and no quoted strings
-// occur in the data sections of the .iv assets.  Numeric output is unchanged
-// (horse.iv golden confirms).
+
+/// Finishes scanning a double-quoted string (opening quote already consumed).
+///
+/// DELIBERATE, SAFE deviation from legacy (flagged, not silent): the 2009 state
+/// machine double-appended each char and left the closing quote in the lexem
+/// (a buffer quirk).  This produces the clean string content instead.  The only
+/// observable difference is the text of a STRING token's lexem, which is used
+/// ONLY in error messages — never for data extraction — and no quoted strings
+/// occur in the data sections of the .iv assets.  Numeric output is unchanged
+/// (horse.iv golden confirms).
 int Lexer::scanString() {
     char c = 0;
     while (nextUpper(c) != '\0') {
@@ -147,9 +165,15 @@ int Lexer::scanString() {
     return static_cast<int>(Token::STRING);
 }
 
+
+/// Reads and uppercases one character at a time, classifies it, and delegates to a per-kind
+/// sub-scanner.  Restructures the legacy switch(status) DFA: each old state group becomes one
+/// scanner (number = states 1/2/5/6, keyword = 3, string = 4), with the same token output.
+/// Helpers append to lexem_ and put back the delimiter as the legacy state machine did.
 int Lexer::lex() {
     lexem_.clear();
     char c = 0;
+
     while (nextUpper(c) != '\0') {
         if (std::isalpha(static_cast<unsigned char>(c)) != 0) {
             lexem_ += c;
@@ -165,8 +189,10 @@ int Lexer::lex() {
         if (c == '"') {
             return scanString();
         }
+
+        // Whitespace separates tokens; only newlines are counted, for error messages.
         if (c == '\n') {
-            ++line;  // newline counts as whitespace; keep scanning
+            ++line;
         } else if (c != ' ' && c != '\t') {
             return static_cast<int>(Token::UNDEFINED);
         }
@@ -174,9 +200,6 @@ int Lexer::lex() {
     return EOF;
 }
 
-// ---------------------------------------------------------------------------
-// match() — consume-and-assert
-// ---------------------------------------------------------------------------
 
 void Lexer::match(int expected) {
     if (lex() != expected) {
@@ -187,30 +210,21 @@ void Lexer::match(int expected) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// getInt / getFloat
-// ---------------------------------------------------------------------------
 
 int Lexer::getInt() const {
-    // NOTE (Beat 2b): atoi is locale-independent for integers but is preserved
-    // from legacy.  Replace with std::from_chars in Beat 2b.
-    return std::atoi(lexem_.c_str());
+    return io_detail::parseInt(lexem_);
 }
+
 
 float Lexer::getFloat() const {
-    // NOTE (Beat 2b): atof is locale-dependent (LC_NUMERIC decimal separator).
-    // This is the locale hazard from Finding B.  Replace with fast_float /
-    // std::from_chars in Beat 2b.
-    return static_cast<float>(std::atof(lexem_.c_str()));
+    return io_detail::parseFloat(lexem_);
 }
 
-// ---------------------------------------------------------------------------
-// checkLexem() — portable keyword lookup
-// ---------------------------------------------------------------------------
 
-int Lexer::checkLexem(const std::string& lexem) const {
+/// Maps @p lexem to its registered keyword token, or Token::STRING if it is not a keyword.
+int Lexer::checkLexem(const std::string &lexem) const {
     // Linear scan (13 Inventor keywords — O(13), negligible).
-    for (const Keyword& kw : keywords_) {
+    for (const Keyword &kw : keywords_) {
         if (caseInsensitiveEqual(kw.text, lexem)) {
             return kw.token;
         }
@@ -218,4 +232,4 @@ int Lexer::checkLexem(const std::string& lexem) const {
     return static_cast<int>(Token::STRING);
 }
 
-}  // namespace decimate
+} // namespace decimate

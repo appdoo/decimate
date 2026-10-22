@@ -51,6 +51,7 @@ namespace decimate {
 /// @param input             Source mesh (positions + indices).
 /// @param targetVertexCount Desired vertex count.
 /// @returns                 Simplified `MeshData`.
-MeshData reduceHalfEdge(const MeshData& input, int targetVertexCount);
+/// @throws std::invalid_argument if a face index is outside `[0, positions.size())`.
+MeshData reduceHalfEdge(const MeshData &input, int targetVertexCount);
 
-}  // namespace decimate
+} // namespace decimate

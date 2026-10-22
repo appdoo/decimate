@@ -12,17 +12,13 @@
 #include <string>
 #include <vector>
 
-#include <decimate/bake/normal_map.h>  // decimate::bake::NormalMap, Rgb
-#include "tga_writer.h"  // ui::writeTGA
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+#include <decimate/bake/normal_map.h> // decimate::bake::NormalMap, Rgb
+#include "tga_writer.h"               // ui::writeTGA
 
 namespace {
 
-/// Read a complete file into a byte buffer.
-std::vector<uint8_t> readFile(const std::string& path) {
+/// Reads a complete file into a byte buffer (empty if it cannot be opened).
+std::vector<uint8_t> readFile(const std::string &path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) {
         return {};
@@ -30,35 +26,35 @@ std::vector<uint8_t> readFile(const std::string& path) {
     const auto size = static_cast<std::size_t>(f.tellg());
     f.seekg(0, std::ios::beg);
     std::vector<uint8_t> buf(size);
-    f.read(reinterpret_cast<char*>(buf.data()),  // NOLINT: reading raw bytes
+    f.read(reinterpret_cast<char *>(buf.data()), // NOLINT: reading raw bytes
            static_cast<std::streamsize>(size));
     return buf;
 }
 
-/// Little-endian uint16 from two bytes.
-uint16_t le16(const std::vector<uint8_t>& buf, std::size_t off) {
+
+/// Little-endian uint16 at @p off.
+uint16_t le16(const std::vector<uint8_t> &buf, std::size_t off) {
     return static_cast<uint16_t>(buf[off]) |
            (static_cast<uint16_t>(buf[off + 1]) << 8);
 }
 
-}  // namespace
+} // namespace
 
-// ---------------------------------------------------------------------------
-// B1 — TGA header + 4-pixel BGR round-trip
-// ---------------------------------------------------------------------------
 
+/// B1: TGA header + 4-pixel BGR round-trip.
 TEST_CASE("writeTGA round-trips a 2x2 NormalMap correctly", "[tga][B1]") {
     // Build a 2×2 NormalMap with four known, distinct RGB values.
     // pixel (x,y) lives at pixels[y * width + x].
     decimate::bake::NormalMap nm;
-    nm.width  = 2;
+    nm.width = 2;
     nm.height = 2;
     nm.pixels = {
-        {  10,  20,  30 },   // (0,0) top-left
-        {  40,  50,  60 },   // (1,0) top-right
-        {  70,  80,  90 },   // (0,1) bottom-left
-        { 100, 110, 120 },   // (1,1) bottom-right
+        { 10, 20, 30 },    // (0,0) top-left
+        { 40, 50, 60 },    // (1,0) top-right
+        { 70, 80, 90 },    // (0,1) bottom-left
+        { 100, 110, 120 }, // (1,1) bottom-right
     };
+
 
     // Write to a temp file.
     const std::string tmpPath = "/tmp/tga_writer_test_b1.tga";
@@ -67,10 +63,8 @@ TEST_CASE("writeTGA round-trips a 2x2 NormalMap correctly", "[tga][B1]") {
     // Re-read the raw bytes.
     const std::vector<uint8_t> raw = readFile(tmpPath);
 
-    // -----------------------------------------------------------------------
     // Header validation (18 bytes).
-    // -----------------------------------------------------------------------
-    REQUIRE(raw.size() >= 18 + 4 * 3);  // header + 4 pixels × 3 bytes
+    REQUIRE(raw.size() >= 18 + 4 * 3); // header + 4 pixels × 3 bytes
 
     // Byte [0] — ID field length (we write 0).
     CHECK(raw[0] == 0);
@@ -106,11 +100,9 @@ TEST_CASE("writeTGA round-trips a 2x2 NormalMap correctly", "[tga][B1]") {
     // Byte [17] — image descriptor: 0x20 = top-left origin.
     CHECK(raw[17] == 0x20);
 
-    // -----------------------------------------------------------------------
     // Pixel data: 4 pixels, each 3 bytes, B G R order.
     // Row 0 = top of image (top-left-origin set in header).
     // pixel[y*w+x] → raw byte at 18 + (y*w+x)*3.
-    // -----------------------------------------------------------------------
     // Known RGB → expected BGR bytes on disk.
     struct PixelCheck {
         uint8_t expectedB;
@@ -121,12 +113,12 @@ TEST_CASE("writeTGA round-trips a 2x2 NormalMap correctly", "[tga][B1]") {
         uint8_t srcB;
     };
 
-    const std::array<PixelCheck, 4> checks = {{
-        {  30,  20,  10,  10,  20,  30 },  // (0,0)
-        {  60,  50,  40,  40,  50,  60 },  // (1,0)
-        {  90,  80,  70,  70,  80,  90 },  // (0,1)
-        { 120, 110, 100, 100, 110, 120 },  // (1,1)
-    }};
+    const std::array<PixelCheck, 4> checks = { {
+        { 30, 20, 10, 10, 20, 30 },       // (0,0)
+        { 60, 50, 40, 40, 50, 60 },       // (1,0)
+        { 90, 80, 70, 70, 80, 90 },       // (0,1)
+        { 120, 110, 100, 100, 110, 120 }, // (1,1)
+    } };
 
     for (std::size_t i = 0; i < checks.size(); ++i) {
         const std::size_t byteOff = 18 + i * 3;
@@ -141,7 +133,9 @@ TEST_CASE("writeTGA round-trips a 2x2 NormalMap correctly", "[tga][B1]") {
     std::remove(tmpPath.c_str());
 }
 
+
+/// An empty map has no image to write: the writer must refuse.
 TEST_CASE("writeTGA returns false for empty NormalMap", "[tga][B1]") {
-    decimate::bake::NormalMap empty;  // width=0, height=0
+    decimate::bake::NormalMap empty; // width=0, height=0
     CHECK_FALSE(ui::writeTGA("/tmp/should_not_exist_11b1.tga", empty));
 }

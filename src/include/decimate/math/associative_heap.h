@@ -33,9 +33,10 @@ namespace decimate::math {
 /// by the heap — callers must not write it.
 class Heapable {
 public:
-    double heapValue = 0.0;  ///< Sort key — lower values bubble to the top.
-    int    heapPos   = -1;   ///< Slot in the heap array (heap-managed).
+    double heapValue = 0.0; ///< Sort key — lower values bubble to the top.
+    int    heapPos = -1;    ///< Slot in the heap array (heap-managed).
 };
+
 
 /// @brief Intrusive binary min-heap with O(log n) decrease-key.
 ///
@@ -65,37 +66,47 @@ public:
     }
 
     /// @brief Insert @p element, set its `heapPos`, and sift it into place.
-    void push(T* element) {
+    void push(T *element) {
         element->heapPos = size();
         heap_.push_back(element);
-        upHeap(element->heapPos);  // upHeap(0) is a no-op — no empty special case
+        upHeap(element->heapPos); // upHeap(0) is a no-op — no empty special case
     }
 
     /// @brief Remove and return the minimum element, or nullptr if empty.
-    T* pop() { return remove(0); }
+    T *pop() {
+        return remove(0);
+    }
 
     /// @brief Remove and return the element at @p position, or nullptr if empty.
-    T* remove(int position) {
+    ///
+    /// @pre 0 <= position < size() (unchecked when the heap is non-empty).
+    T *remove(int position) {
         if (heap_.empty()) {
             return nullptr;
         }
-        Heapable* removed = heap_[static_cast<std::size_t>(position)];
-        Heapable* last    = heap_.back();
+
+        Heapable *removed = heap_[static_cast<std::size_t>(position)];
+        Heapable *last = heap_.back();
         heap_.pop_back();
+
         // If the removed slot still exists, move the former last element into
         // it and let it settle.  (When `position` was the last slot, it is gone.)
         if (position < size()) {
-            at(position)  = last;
+            at(position) = last;
             last->heapPos = position;
             downHeap(position);
         }
-        return static_cast<T*>(removed);
+        return static_cast<T *>(removed);
     }
 
     /// @brief Remove and return @p element (located via its `heapPos`).
-    T* remove(T* element) { return remove(element->heapPos); }
+    T *remove(T *element) {
+        return remove(element->heapPos);
+    }
 
     /// @brief Re-key the element at @p position after its `heapValue` changed.
+    ///
+    /// @pre 0 <= pos < size().
     void repair(int pos) {
         // Smaller than parent → sift up; otherwise sift down.
         if (pos > 0 && at(pos)->heapValue < at((pos - 1) / 2)->heapValue) {
@@ -106,7 +117,9 @@ public:
     }
 
     /// @brief Re-key @p element after its `heapValue` changed.
-    void repair(T* element) { repair(element->heapPos); }
+    void repair(T *element) {
+        repair(element->heapPos);
+    }
 
     /// @brief Number of elements currently in the heap.
     [[nodiscard]] int size() const noexcept {
@@ -114,12 +127,17 @@ public:
     }
 
     /// @brief True if the heap holds no elements.
-    [[nodiscard]] bool empty() const noexcept { return heap_.empty(); }
+    [[nodiscard]] bool empty() const noexcept {
+        return heap_.empty();
+    }
 
 private:
     /// Int-indexed accessor — heap arithmetic is in `int`; cast in one place.
-    Heapable*& at(int i) { return heap_[static_cast<std::size_t>(i)]; }
+    Heapable *&at(int i) {
+        return heap_[static_cast<std::size_t>(i)];
+    }
 
+    /// Bubbles slot @p k up while it is smaller than its parent.
     void upHeap(int k) {
         while (k > 0) {
             const int parent = (k - 1) / 2;
@@ -127,38 +145,41 @@ private:
                 break;
             }
             std::swap(at(k), at(parent));
-            at(k)->heapPos      = k;
+            at(k)->heapPos = k;
             at(parent)->heapPos = parent;
             k = parent;
         }
     }
 
+    /// Sinks slot @p pos down while a child is smaller.
     void downHeap(int pos) {
         const int n = size();
+
         for (;;) {
             int child = (2 * pos) + 1;
             if (child >= n) {
                 break;
             }
             if (child + 1 < n && at(child + 1)->heapValue < at(child)->heapValue) {
-                ++child;  // pick the smaller child
+                ++child; // pick the smaller child
             }
             if (at(pos)->heapValue < at(child)->heapValue) {
-                break;  // already in order
+                break; // already in order
             }
             std::swap(at(pos), at(child));
-            at(pos)->heapPos   = pos;
+            at(pos)->heapPos = pos;
             at(child)->heapPos = child;
             pos = child;
         }
     }
 
-    std::vector<Heapable*> heap_;  ///< Non-owning storage; size() is the count.
+    std::vector<Heapable *> heap_; ///< Non-owning storage; size() is the count.
 };
 
-}  // namespace decimate::math
+} // namespace decimate::math
 
-namespace decimate {  // transitional re-export
-using math::Heapable;
+
+namespace decimate { // transitional re-export
 using math::AssociativeHeap;
-}
+using math::Heapable;
+} // namespace decimate

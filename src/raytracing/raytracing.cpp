@@ -1,49 +1,49 @@
 // This file is part of the decimate library; see decimate.h for version/license details.
-// mesh-toolkit — core raytracing implementation
-// Ported from legacy/raytracing/raytracing.cpp onto decimate::math::Vec3<float>.
-//
-// Operator mapping (legacy Vec3 vs decimate::math::Vec3):
-//   legacy  a * b  (Vec3 * Vec3) = dot product  → a.dot(b)
-//   legacy  a ^ b               = cross product → a.cross(b)
-//   legacy  a * s  (scalar)                     → a * s  (same)
-//   legacy  a + b, a - b, +=, -=                → same
-//   legacy  norm()                              → normalize() (in-place) or normalized()
-//
-// Algorithm: zero behavior change — operand order and branch structure
-// are preserved exactly from the 2003 source.
+/// @file raytracing.cpp
+/// @brief Ray/plane and ray/triangle kernels, ported from legacy2003/raytracing/raytracing.cpp onto
+/// decimate::math::Vec3f. Contracts are in raytracing.h.
+///
+/// Operator mapping (legacy Vec3 vs decimate::math::Vec3):
+///   legacy  a * b  (Vec3 * Vec3) = dot product  -> a.dot(b)
+///   legacy  a ^ b               = cross product -> a.cross(b)
+///   legacy  a * s  (scalar)                     -> a * s  (same)
+///   legacy  a + b, a - b, +=, -=                -> same
+///   legacy  norm()                              -> normalize() (in-place) or normalized()
+///
+/// Operand order and branch structure are kept exactly as in the 2003 source: the bake's bit-exact
+/// equality with the brute-force loop (see bvh.h) depends on the same floats going through the same
+/// operations.
 
 #include <decimate/raytracing/raytracing.h>
 
 #include <cmath>
 
+/// File-local shorthand (an alias, not a using-directive): this file is outside namespace decimate.
+namespace math = decimate::math;
+
 namespace rtrace {
 
-// ---------------------------------------------------------------------------
-// evaluate_t
-// ---------------------------------------------------------------------------
-bool evaluate_t(float& t, const decimate::math::Vec3<float>& nrm, float d,
-                const decimate::math::Vec3<float>& origin, const decimate::math::Vec3<float>& dir) {
-    // N·D: if near zero, ray is parallel to plane
+bool evaluate_t(float &t, const math::Vec3f &nrm, float d,
+                const math::Vec3f &origin, const math::Vec3f &dir) {
     float div = nrm.dot(dir);
 
+    // N.D near zero: the ray runs parallel to the plane, there is no intersection to solve for.
     if (std::fabs(div) < kEpsilonF) {
         return false;
     }
 
-    // t = -(d + N·O) / (N·D)
     t = -(d + nrm.dot(origin)) / div;
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// barycentricBadouel
-// ---------------------------------------------------------------------------
-bool barycentricBadouel(float& alpha, float& beta, const float* p, const float* nrm,
-                        const float* p0, const float* p1, const float* p2) {
+
+bool barycentricBadouel(float &alpha, float &beta, const float *p, const float *nrm,
+                        const float *p0, const float *p1, const float *p2) {
     int i1 = 0;
     int i2 = 0;
 
-    // Select the two dominant axes of the face normal (pre-computable).
+    // Project onto the plane that drops the normal's dominant axis, keeping the projected area largest
+    // (the choice depends on the face only, so it could be precomputed).
     float nx = std::fabs(nrm[0]);
     float ny = std::fabs(nrm[1]);
     float nz = std::fabs(nrm[2]);
@@ -59,6 +59,7 @@ bool barycentricBadouel(float& alpha, float& beta, const float* p, const float* 
         i2 = 1;
     }
 
+    // Triangle edges and the point, relative to p0, in the projected plane.
     float u0 = p[i1] - p0[i1];
     float v0 = p[i2] - p0[i2];
     float u1 = p1[i1] - p0[i1];
@@ -66,65 +67,56 @@ bool barycentricBadouel(float& alpha, float& beta, const float* p, const float* 
     float u2 = p2[i1] - p0[i1];
     float v2 = p2[i2] - p0[i2];
 
-    if (u1 == 0.0F) {
+    // Solve p = p0 + alpha*(p1-p0) + beta*(p2-p0); u1 == 0 selects the formulation that avoids dividing by it.
+    if (u1 == 0.0f) {
         beta = u0 / u2;
-        if ((beta >= 0.0F) && (beta <= 1.0F)) {
+        if ((beta >= 0.0f) && (beta <= 1.0f)) {
             alpha = (v0 - beta * v2) / v1;
-            return (alpha >= 0.0F) && ((alpha + beta) <= 1.0F);
+            return (alpha >= 0.0f) && ((alpha + beta) <= 1.0f);
         }
     } else {
         beta = (v0 * u1 - u0 * v1) / (v2 * u1 - u2 * v1);
-        if ((beta >= 0.0F) && (beta <= 1.0F)) {
+        if ((beta >= 0.0f) && (beta <= 1.0f)) {
             alpha = (u0 - beta * u2) / u1;
-            return (alpha >= 0.0F) && ((alpha + beta) <= 1.0F);
+            return (alpha >= 0.0f) && ((alpha + beta) <= 1.0f);
         }
     }
 
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// intersect_triangle_bfc  (backface culling ON)
-// ---------------------------------------------------------------------------
-bool intersect_triangle_bfc(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir,
-                            decimate::math::Vec3<float>& v0, decimate::math::Vec3<float>& v1, decimate::math::Vec3<float>& v2,
-                            float* t, float* u, float* v) {
-    // Edge vectors from v0
-    decimate::math::Vec3<float> e1 = v1 - v0;
-    decimate::math::Vec3<float> e2 = v2 - v0;
 
-    // pv = dir × e2 (used for determinant and u parameter)
-    decimate::math::Vec3<float> pv = dir.cross(e2);
+bool intersect_triangle_bfc(math::Vec3f &orig, math::Vec3f &dir,
+                            math::Vec3f &v0, math::Vec3f &v1, math::Vec3f &v2,
+                            float *t, float *u, float *v) {
+    math::Vec3f e1 = v1 - v0;
+    math::Vec3f e2 = v2 - v0;
+    math::Vec3f pv = dir.cross(e2);
+    float       det = e1.dot(pv);
 
-    // det = e1 · pv
-    float det = e1.dot(pv);
-
-    // Backface culling: reject if determinant is not clearly positive
-    if (det < 1e-12F) {
+    // Backface culling: the determinant's sign is the facing, so a non-positive one is a backface
+    // (or a ray in the triangle's plane).
+    if (det < 1e-12f) {
         return false;
     }
 
-    // tv = orig - v0
-    decimate::math::Vec3<float> tv = orig - v0;
+    math::Vec3f tv = orig - v0;
 
-    // u parameter
+    // Reject on u and v before the remaining cross product and the division are paid for.
     *u = tv.dot(pv);
-    if (*u < 0.0F || *u > det) {
+    if (*u < 0.0f || *u > det) {
         return false;
     }
 
-    // qv = tv × e1
-    decimate::math::Vec3<float> qv = tv.cross(e1);
-
-    // v parameter
+    math::Vec3f qv = tv.cross(e1);
     *v = dir.dot(qv);
-    if (*v < 0.0F || *u + *v > det) {
+    if (*v < 0.0f || *u + *v > det) {
         return false;
     }
 
-    // Scale to barycentric coordinates
+    // Hit: scale t, u, v by 1/det (the tests above ran on unscaled values).
     *t = e2.dot(qv);
-    float invDet = 1.0F / det;
+    float invDet = 1.0f / det;
     *t *= invDet;
     *u *= invDet;
     *v *= invDet;
@@ -132,50 +124,36 @@ bool intersect_triangle_bfc(decimate::math::Vec3<float>& orig, decimate::math::V
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// intersect_triangle  (backface culling OFF)
-// ---------------------------------------------------------------------------
-bool intersect_triangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir, decimate::math::Vec3<float>& v0,
-                        decimate::math::Vec3<float>& v1, decimate::math::Vec3<float>& v2, float* t, float* u,
-                        float* v) {
-    // Edge vectors from v0
-    decimate::math::Vec3<float> e1 = v1 - v0;
-    decimate::math::Vec3<float> e2 = v2 - v0;
 
-    // pv = dir × e2
-    decimate::math::Vec3<float> pv = dir.cross(e2);
+bool intersect_triangle(math::Vec3f &orig, math::Vec3f &dir, math::Vec3f &v0,
+                        math::Vec3f &v1, math::Vec3f &v2, float *t, float *u,
+                        float *v) {
+    math::Vec3f e1 = v1 - v0;
+    math::Vec3f e2 = v2 - v0;
+    math::Vec3f pv = dir.cross(e2);
+    float       det = e1.dot(pv);
+    math::Vec3f tv = orig - v0;
+    math::Vec3f qv = tv.cross(e1);
 
-    // det = e1 · pv
-    float det = e1.dot(pv);
-
-    // tv = orig - v0
-    decimate::math::Vec3<float> tv = orig - v0;
-
-    // qv = tv × e1
-    decimate::math::Vec3<float> qv = tv.cross(e1);
-
+    // Both signs of det are hits (no culling); a negative det mirrors every inequality.
     if (det > kEpsilonF) {
-        // u parameter
         *u = tv.dot(pv);
-        if (*u < 0.0F || *u > det) {
+        if (*u < 0.0f || *u > det) {
             return false;
         }
 
-        // v parameter
         *v = dir.dot(qv);
-        if (*v < 0.0F || *u + *v > det) {
+        if (*v < 0.0f || *u + *v > det) {
             return false;
         }
     } else if (det < -kEpsilonF) {
-        // u parameter (negative determinant branch)
         *u = tv.dot(pv);
-        if (*u > 0.0F || *u < det) {
+        if (*u > 0.0f || *u < det) {
             return false;
         }
 
-        // v parameter
         *v = dir.dot(qv);
-        if (*v > 0.0F || *u + *v < det) {
+        if (*v > 0.0f || *u + *v < det) {
             return false;
         }
     } else {
@@ -183,7 +161,8 @@ bool intersect_triangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<
         return false;
     }
 
-    // Scale to barycentric coordinates
+    // Hit: scale t, u, v by 1/det. This variant divides; the other two multiply by the reciprocal. The
+    // results can differ in the last bit, so the three are not interchangeable.
     *t = e2.dot(qv) / det;
     *u /= det;
     *v /= det;
@@ -191,46 +170,36 @@ bool intersect_triangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// IntersectTriangle  (Drew's adaptation from Real Time Rendering)
-// ---------------------------------------------------------------------------
-bool IntersectTriangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir, decimate::math::Vec3<float>& v1,
-                       decimate::math::Vec3<float>& v2, decimate::math::Vec3<float>& v3, float* t, float* u,
-                       float* v) {
-    // Edge vectors from v1
-    decimate::math::Vec3<float> edge1 = v2 - v1;
-    decimate::math::Vec3<float> edge2 = v3 - v1;
 
-    // pvec = dir × edge2
-    decimate::math::Vec3<float> pvec = dir.cross(edge2);
+bool IntersectTriangle(math::Vec3f &orig, math::Vec3f &dir, math::Vec3f &v1,
+                       math::Vec3f &v2, math::Vec3f &v3, float *t, float *u,
+                       float *v) {
+    math::Vec3f edge1 = v2 - v1;
+    math::Vec3f edge2 = v3 - v1;
+    math::Vec3f pvec = dir.cross(edge2);
+    float       det = edge1.dot(pvec);
+    math::Vec3f tvec = orig - v1;
+    math::Vec3f qvec = tvec.cross(edge1);
 
-    // det = edge1 · pvec
-    float det = edge1.dot(pvec);
-
-    // tvec = orig - v1
-    decimate::math::Vec3<float> tvec = orig - v1;
-
-    // qvec = tvec × edge1
-    decimate::math::Vec3<float> qvec = tvec.cross(edge1);
-
+    // Same two-sided test as intersect_triangle.
     if (det > kEpsilonF) {
         *u = tvec.dot(pvec);
-        if (*u < 0.0F || *u > det) {
+        if (*u < 0.0f || *u > det) {
             return false;
         }
 
         *v = dir.dot(qvec);
-        if (*v < 0.0F || *u + *v > det) {
+        if (*v < 0.0f || *u + *v > det) {
             return false;
         }
     } else if (det < -kEpsilonF) {
         *u = tvec.dot(pvec);
-        if (*u > 0.0F || *u < det) {
+        if (*u > 0.0f || *u < det) {
             return false;
         }
 
         *v = dir.dot(qvec);
-        if (*v > 0.0F || *u + *v < det) {
+        if (*v > 0.0f || *u + *v < det) {
             return false;
         }
     } else {
@@ -238,7 +207,8 @@ bool IntersectTriangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<f
         return false;
     }
 
-    float invDet = 1.0F / det;
+    // Hit: scale t, u, v by 1/det.
+    float invDet = 1.0f / det;
 
     *t = edge2.dot(qvec) * invDet;
     (*u) *= invDet;
@@ -247,4 +217,4 @@ bool IntersectTriangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<f
     return true;
 }
 
-}  // namespace rtrace
+} // namespace rtrace

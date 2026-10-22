@@ -3,7 +3,7 @@
 
 /// @file sparse_bit_set.h
 /// @brief Sparse bit set — behavior-preserving port of
-///        legacy/math/csparsebitset.{h,cpp} (Spec 05, Beat 2a).
+///        legacy2003/math/csparsebitset.{h,cpp} (Spec 05, Beat 2a).
 ///
 /// ## Design
 ///
@@ -22,7 +22,7 @@
 ///
 /// `erase()` contains two defects from 2009:
 ///
-/// 1. **`!`-vs-`~` bug (csparsebitset.cpp:103):**
+/// 1. **`!`-vs-`~` bug (legacy2003/math/csparsebitset.cpp:103):**
 ///    `bits[offset] &= !(1 << bit & 0x1F)` uses logical-NOT instead of
 ///    bitwise-NOT (`~`).  For any nonzero mask `!(mask) == 0`, so the entire
 ///    word is cleared instead of just the target bit.
@@ -49,7 +49,6 @@ namespace decimate::math {
 ///
 /// ## Word layout
 /// Bit `b` lives in word `b >> 5` at position `b & 0x1F`.
-///
 class CSparseBitSet {
 public:
     /// @brief Construct an empty bitset. (Rule of Zero — vector owns storage.)
@@ -78,8 +77,8 @@ public:
     [[nodiscard]] bool test(int bit) const;
 
 private:
-    std::vector<int> bits_;  ///< 32-bit word values, indexed by array position.
-    std::vector<int> offs_;  ///< Word offsets (bit >> 5), one per entry.
+    std::vector<int> bits_; ///< 32-bit word values, indexed by array position.
+    std::vector<int> offs_; ///< Word offsets (bit >> 5), one per entry.
 
     /// @brief Find the array index for word `wordOffset`, or -1 if absent.
     [[nodiscard]] int find(int wordOffset) const;
@@ -88,6 +87,9 @@ private:
     int insertWord(int wordOffset);
 };
 
-}  // namespace decimate::math
+} // namespace decimate::math
 
-namespace decimate { using math::CSparseBitSet; }  // transitional re-export
+
+namespace decimate {
+using math::CSparseBitSet;
+} // namespace decimate

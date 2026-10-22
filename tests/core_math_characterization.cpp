@@ -24,16 +24,12 @@
 
 using namespace decimate;
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// Returns V - E + F Euler characteristic for the mesh.
-/// E = halfEdgeCount / 2  (each edge = 2 half-edges)
-/// V = numPoints (as reported by the mesh)
-static int eulerCharacteristic(const HalfEdgeMesh& m) {
+/// Euler characteristic V - E + F of the mesh; E counts an interior edge once (its two half-edges) and a boundary
+/// edge once (its single half-edge).
+static int eulerCharacteristic(const HalfEdgeMesh &m) {
     int V = static_cast<int>(m.pointCount());
     int F = static_cast<int>(m.faceCount());
+
     // Count unique edges: each interior edge has a sym pair; boundary edges exist once.
     int interiorHalfEdges = 0;
     for (std::uint32_t h = 0; h < m.halfEdgeCount(); ++h) {
@@ -41,15 +37,14 @@ static int eulerCharacteristic(const HalfEdgeMesh& m) {
             ++interiorHalfEdges;
         }
     }
-    // Interior half-edges come in pairs; boundary half-edges are single.
     int boundaryHalfEdges = static_cast<int>(m.halfEdgeCount()) - interiorHalfEdges;
-    // Each interior edge is counted twice; each boundary edge once.
     int E = interiorHalfEdges / 2 + boundaryHalfEdges;
     return V - E + F;
 }
 
-/// Count half-edges with sym == kNoHalfedge.
-static int boundaryCount(const HalfEdgeMesh& m) {
+
+/// Number of boundary half-edges (sym == kNoHalfedge).
+static int boundaryCount(const HalfEdgeMesh &m) {
     int count = 0;
     for (std::uint32_t h = 0; h < m.halfEdgeCount(); ++h) {
         if (m.sym(h) == kNoHalfedge) {
@@ -59,44 +54,49 @@ static int boundaryCount(const HalfEdgeMesh& m) {
     return count;
 }
 
-/// Build a tetrahedron: 4 faces, 4 vertices.
-/// Face winding produces an outward-normal closed mesh.
+
+/// Tetrahedron: 4 faces, 4 vertices; the winding gives a closed mesh with outward normals.
 static HalfEdgeMesh makeTetra() {
     Face faces[4] = {
-        {0, 1, 2},
-        {0, 2, 3},
-        {0, 3, 1},
-        {1, 3, 2},
+        { 0, 1, 2 },
+        { 0, 2, 3 },
+        { 0, 3, 1 },
+        { 1, 3, 2 },
     };
     return HalfEdgeMesh::create(4, 4, faces);
 }
 
-/// Build a triangulated cube: 12 faces, 8 vertices.
+
+/// Triangulated cube: 12 faces, 8 vertices (closed, so every half-edge has a sym).
 static HalfEdgeMesh makeCube() {
-    // 8 vertices of a unit cube.
-    // Each face of the cube is split into 2 triangles.
+    // Each of the 6 cube sides over the 8 corners is split into 2 triangles.
     Face faces[12] = {
         // Bottom face (y=0)
-        {0, 1, 2}, {0, 2, 3},
+        { 0, 1, 2 },
+        { 0, 2, 3 },
         // Top face (y=1)
-        {4, 6, 5}, {4, 7, 6},
+        { 4, 6, 5 },
+        { 4, 7, 6 },
         // Front face (z=1)
-        {3, 2, 6}, {3, 6, 7},
+        { 3, 2, 6 },
+        { 3, 6, 7 },
         // Back face (z=0)
-        {0, 4, 5}, {0, 5, 1},
+        { 0, 4, 5 },
+        { 0, 5, 1 },
         // Left face (x=0)
-        {0, 3, 7}, {0, 7, 4},
+        { 0, 3, 7 },
+        { 0, 7, 4 },
         // Right face (x=1)
-        {1, 5, 6}, {1, 6, 2},
+        { 1, 5, 6 },
+        { 1, 6, 2 },
     };
     return HalfEdgeMesh::create(8, 12, faces);
 }
 
-// ===========================================================================
-// T1 — Single triangle: 3 half-edges, all boundary
-// ===========================================================================
+
+/// T1 — Single triangle: 3 half-edges, all boundary
 TEST_CASE("T1: single triangle has 3 half-edges, all boundary", "[halfedge][T1]") {
-    Face faces[1] = {{0, 1, 2}};
+    Face         faces[1] = { { 0, 1, 2 } };
     HalfEdgeMesh m = HalfEdgeMesh::create(3, 1, faces);
 
     REQUIRE(m.halfEdgeCount() == 3u);
@@ -109,12 +109,11 @@ TEST_CASE("T1: single triangle has 3 half-edges, all boundary", "[halfedge][T1]"
     CHECK(boundaryCount(m) == 3);
 }
 
-// ===========================================================================
-// T2 — Two-triangle quad: 6 half-edges, shared interior edge + 4 boundary
-// ===========================================================================
+
+/// T2 — Two-triangle quad: 6 half-edges, shared interior edge + 4 boundary
 TEST_CASE("T2: two-triangle quad has 6 half-edges with correct sym pairing", "[halfedge][T2]") {
     // Quad: two triangles sharing edge (0,2)
-    Face faces[2] = {{0, 1, 2}, {0, 2, 3}};
+    Face         faces[2] = { { 0, 1, 2 }, { 0, 2, 3 } };
     HalfEdgeMesh m = HalfEdgeMesh::create(4, 2, faces);
 
     REQUIRE(m.halfEdgeCount() == 6u);
@@ -135,9 +134,8 @@ TEST_CASE("T2: two-triangle quad has 6 half-edges with correct sym pairing", "[h
     CHECK(boundaryCount(m) == 4);
 }
 
-// ===========================================================================
-// T3 — Closed tetrahedron: 12 half-edges, fully paired, Euler χ = 2
-// ===========================================================================
+
+/// T3 — Closed tetrahedron: 12 half-edges, fully paired, Euler χ = 2
 TEST_CASE("T3: closed tetrahedron has 12 half-edges, all paired, Euler=2", "[halfedge][T3]") {
     HalfEdgeMesh m = makeTetra();
 
@@ -155,9 +153,8 @@ TEST_CASE("T3: closed tetrahedron has 12 half-edges, all paired, Euler=2", "[hal
     CHECK(eulerCharacteristic(m) == 2);
 }
 
-// ===========================================================================
-// T4 — Triangulated cube: 36 half-edges, all paired, Euler χ = 2
-// ===========================================================================
+
+/// T4 — Triangulated cube: 36 half-edges, all paired, Euler χ = 2
 TEST_CASE("T4: triangulated cube has 36 half-edges, all paired, Euler=2", "[halfedge][T4]") {
     HalfEdgeMesh m = makeCube();
 
@@ -174,9 +171,8 @@ TEST_CASE("T4: triangulated cube has 36 half-edges, all paired, Euler=2", "[half
     CHECK(eulerCharacteristic(m) == 2);
 }
 
-// ===========================================================================
-// T5 — SparseMat Gauss-Seidel solve 3×3 known system
-// ===========================================================================
+
+/// T5 — SparseMat Gauss-Seidel solve 3×3 known system
 TEST_CASE("T5: Gauss-Seidel solveIterative gives correct result within 1e-4", "[sparsemat][T5]") {
     // A = [[2,1,0],[1,3,1],[0,1,2]], b = [1, 2, 1]
     // Analytic solution: x = [0.25, 0.5, 0.25]
@@ -196,8 +192,10 @@ TEST_CASE("T5: Gauss-Seidel solveIterative gives correct result within 1e-4", "[
 
     SMat x = A.solveIterative(&b);
 
+    // 1e-4 absolute: Gauss-Seidel stops on its own residual, not at machine precision.
     REQUIRE(x.m == 3);
     REQUIRE(x.n == 1);
+
 
     constexpr double eps = 1e-4;
     CHECK(std::abs(x.getvalue(0, 0) - 0.25) < eps);
@@ -205,16 +203,18 @@ TEST_CASE("T5: Gauss-Seidel solveIterative gives correct result within 1e-4", "[
     CHECK(std::abs(x.getvalue(2, 0) - 0.25) < eps);
 }
 
-// ===========================================================================
-// T6 — Heap pop order: push [5,3,8,1,4] → pop order [1,3,4,5,8]
-// ===========================================================================
+
+/// T6 — Heap pop order: push [5,3,8,1,4] → pop order [1,3,4,5,8]
 TEST_CASE("T6: heap pop order ascending for push [5,3,8,1,4]", "[heap][T6]") {
     struct Item : Heapable {
-        explicit Item(double v) { heapValue = v; }
+        explicit Item(double v) {
+            heapValue = v;
+        }
     };
 
     Item e5(5.0), e3(3.0), e8(8.0), e1(1.0), e4(4.0);
 
+    // Unsorted pushes: the heap, not the push order, must produce the ascending pops.
     AssociativeHeap heap;
     heap.push(&e5);
     heap.push(&e3);
@@ -224,22 +224,21 @@ TEST_CASE("T6: heap pop order ascending for push [5,3,8,1,4]", "[heap][T6]") {
 
     REQUIRE(heap.size() == 5);
 
-    double expected[] = {1.0, 3.0, 4.0, 5.0, 8.0};
+    double expected[] = { 1.0, 3.0, 4.0, 5.0, 8.0 };
     for (int i = 0; i < 5; ++i) {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(expected[i]));
     }
     CHECK(heap.empty());
 }
 
-// ===========================================================================
-// T7 — next-loop closure + face bookkeeping (all meshes)
-// ===========================================================================
+
+/// T7 — next-loop closure + face bookkeeping (all meshes)
 TEST_CASE("T7: next-loop closure and face field for triangle/quad/tetra/cube", "[halfedge][T7]") {
     // Single triangle
     {
-        Face faces[1] = {{0, 1, 2}};
+        Face         faces[1] = { { 0, 1, 2 } };
         HalfEdgeMesh m = HalfEdgeMesh::create(3, 1, faces);
         // next(next(next(h))) == h for all h in [0,2]
         for (std::uint32_t h = 0; h < 3u; ++h) {
@@ -247,15 +246,17 @@ TEST_CASE("T7: next-loop closure and face field for triangle/quad/tetra/cube", "
             CHECK(m.halfedge(h).face == 0u);
         }
     }
+
     // Two-triangle quad
     {
-        Face faces[2] = {{0, 1, 2}, {0, 2, 3}};
+        Face         faces[2] = { { 0, 1, 2 }, { 0, 2, 3 } };
         HalfEdgeMesh m = HalfEdgeMesh::create(4, 2, faces);
         for (std::uint32_t h = 0; h < 6u; ++h) {
             CHECK(m.next(m.next(m.next(h))) == h);
             CHECK(m.halfedge(h).face == (h < 3u ? 0u : 1u));
         }
     }
+
     // Tetrahedron
     {
         HalfEdgeMesh m = makeTetra();
@@ -266,13 +267,12 @@ TEST_CASE("T7: next-loop closure and face field for triangle/quad/tetra/cube", "
     }
 }
 
-// ===========================================================================
-// T8 — end/origin index correctness for all meshes
-// ===========================================================================
+
+/// T8 — end/origin index correctness for all meshes
 TEST_CASE("T8: end and origin indices match face winding", "[halfedge][T8]") {
     // Single triangle {0,1,2}: he0→end=2, he1→end=1, he2→end=0
     {
-        Face faces[1] = {{0, 1, 2}};
+        Face         faces[1] = { { 0, 1, 2 } };
         HalfEdgeMesh m = HalfEdgeMesh::create(3, 1, faces);
         // writeFace: ac(0)→end=c=2, cb(1)→end=b=1, ba(2)→end=a=0
         CHECK(m.halfedge(0).end == 2u);
@@ -282,6 +282,7 @@ TEST_CASE("T8: end and origin indices match face winding", "[halfedge][T8]") {
         // origin(0) = end(next(next(0))) = end(next(1)) = end(2) = 0
         CHECK(m.halfedge(m.halfedge(m.halfedge(0).next).next).end == 0u);
     }
+
     // Tetrahedron — check all 12 half-edges for valid index range
     {
         HalfEdgeMesh m = makeTetra();
@@ -293,9 +294,8 @@ TEST_CASE("T8: end and origin indices match face winding", "[halfedge][T8]") {
     }
 }
 
-// ===========================================================================
-// T9 — Deep-copy value semantics
-// ===========================================================================
+
+/// T9 — Deep-copy value semantics
 TEST_CASE("T9: deep-copy independence — mutating copy leaves original unchanged", "[halfedge][T9]") {
     HalfEdgeMesh original = makeTetra();
 
@@ -320,9 +320,8 @@ TEST_CASE("T9: deep-copy independence — mutating copy leaves original unchange
     CHECK(copy.halfEdgeCount() == 12u);
 }
 
-// ===========================================================================
-// T10 — SparseMat stored entries + mat-vec product
-// ===========================================================================
+
+/// T10 — SparseMat stored entries + mat-vec product
 TEST_CASE("T10: SparseMat insert/getvalue and mul match expected values", "[sparsemat][T10]") {
     // Build 3×3 matrix A = [[2,1,0],[1,3,1],[0,1,2]]
     SMat A(3, 3);
@@ -345,21 +344,20 @@ TEST_CASE("T10: SparseMat insert/getvalue and mul match expected values", "[spar
     CHECK(A.getvalue(2, 2) == Catch::Approx(2.0));
 
     // mat-vec product via mul(rowid, vec)
-    double v1[3] = {1.0, 0.0, 0.0};
+    double v1[3] = { 1.0, 0.0, 0.0 };
     CHECK(A.mul(0, v1) == Catch::Approx(2.0));
     CHECK(A.mul(1, v1) == Catch::Approx(1.0));
     CHECK(A.mul(2, v1) == Catch::Approx(0.0));
 
     // A * [1, 1, 1]^T = [3, 5, 3]
-    double v2[3] = {1.0, 1.0, 1.0};
+    double v2[3] = { 1.0, 1.0, 1.0 };
     CHECK(A.mul(0, v2) == Catch::Approx(3.0));
     CHECK(A.mul(1, v2) == Catch::Approx(5.0));
     CHECK(A.mul(2, v2) == Catch::Approx(3.0));
 }
 
-// ===========================================================================
-// T11 — Heap Repair (decrease-key) + heapPos bookkeeping
-// ===========================================================================
+
+/// T11 — Heap Repair (decrease-key) + heapPos bookkeeping
 TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]") {
     // This test uses the EXACT spec values (value 0, pop order [0,1,3,4,5])
     // and traces the intrusive heapPos field after repair and after each pop.
@@ -373,7 +371,9 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
     //   heapPos after repair: e8=0, e3=1, e1=2, e5=3, e4=4
 
     struct Item : Heapable {
-        explicit Item(double v) { heapValue = v; }
+        explicit Item(double v) {
+            heapValue = v;
+        }
     };
 
     Item e5(5.0), e3(3.0), e8(8.0), e1(1.0), e4(4.0);
@@ -403,7 +403,7 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
 
     // Pop 1: e8(0.0) — after: heap=[e1,e3,e4,e5]; e1=0,e3=1,e4=2,e5=3
     {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(0.0));
         CHECK(e1.heapPos == 0);
@@ -414,7 +414,7 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
 
     // Pop 2: e1(1.0) — after: heap=[e3,e5,e4]; e3=0,e5=1,e4=2
     {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(1.0));
         CHECK(e3.heapPos == 0);
@@ -424,7 +424,7 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
 
     // Pop 3: e3(3.0) — after: heap=[e4,e5]; e4=0,e5=1
     {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(3.0));
         CHECK(e4.heapPos == 0);
@@ -433,7 +433,7 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
 
     // Pop 4: e4(4.0) — after: heap=[e5]; e5=0
     {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(4.0));
         CHECK(e5.heapPos == 0);
@@ -441,7 +441,7 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
 
     // Pop 5: e5(5.0) — heap empty
     {
-        Heapable* top = heap.pop();
+        Heapable *top = heap.pop();
         REQUIRE(top != nullptr);
         CHECK(top->heapValue == Catch::Approx(5.0));
     }
@@ -449,9 +449,8 @@ TEST_CASE("T11: heap Repair after decrease-key reorders correctly", "[heap][T11]
     CHECK(heap.empty());
 }
 
-// ===========================================================================
-// T12 — CSparseBitSet cross-word insert and test
-// ===========================================================================
+
+/// T12 — CSparseBitSet cross-word insert and test
 TEST_CASE("T12: CSparseBitSet cross-word insert and test", "[bitset][T12]") {
     CSparseBitSet bs;
 
@@ -468,9 +467,8 @@ TEST_CASE("T12: CSparseBitSet cross-word insert and test", "[bitset][T12]") {
     CHECK(bs.test(0) == false);
 }
 
-// ===========================================================================
-// T13 — CSparseBitSet erase() bug characterization (DO NOT FIX)
-// ===========================================================================
+
+/// T13 — CSparseBitSet erase() bug characterization (DO NOT FIX)
 TEST_CASE("T13: erase() characterized legacy bugs — wipe-whole-word and no-op-at-zero", "[bitset][T13]") {
     // Scenario A: erase of a bit in array-index-0 word is a NO-OP.
     // bit 3 → word 0 → array index 0
@@ -486,7 +484,7 @@ TEST_CASE("T13: erase() characterized legacy bugs — wipe-whole-word and no-op-
 
         // ALL three bits remain set (the erase had no effect)
         CHECK(bs.test(3) == true);
-        CHECK(bs.test(4) == true);   // NOT erased — bug #1 (no-op at index 0)
+        CHECK(bs.test(4) == true); // NOT erased — bug #1 (no-op at index 0)
         CHECK(bs.test(5) == true);
     }
 
@@ -496,30 +494,29 @@ TEST_CASE("T13: erase() characterized legacy bugs — wipe-whole-word and no-op-
     // bits[1] &= !(1 << (36 & 0x1F)) = !(1<<4) = !16 = 0 → whole word wiped.
     {
         CSparseBitSet bs;
-        bs.insert(3);   // word 0, array index 0
-        bs.insert(35);  // word 1, array index 1; bit pos 3
-        bs.insert(36);  // word 1, array index 1; bit pos 4
-        bs.insert(37);  // word 1, array index 1; bit pos 5
+        bs.insert(3);  // word 0, array index 0
+        bs.insert(35); // word 1, array index 1; bit pos 3
+        bs.insert(36); // word 1, array index 1; bit pos 4
+        bs.insert(37); // word 1, array index 1; bit pos 5
 
         // Confirm all are set before erase
         REQUIRE(bs.test(35) == true);
         REQUIRE(bs.test(36) == true);
         REQUIRE(bs.test(37) == true);
-        REQUIRE(bs.test(3)  == true);
+        REQUIRE(bs.test(3) == true);
 
         bs.erase(36);
 
         // Bug: !-vs-~ wipes the entire word 1 → 35 and 37 also cleared
-        CHECK(bs.test(36) == false);  // target bit cleared (side effect of whole-word wipe)
-        CHECK(bs.test(35) == false);  // collateral — whole word wiped
-        CHECK(bs.test(37) == false);  // collateral — whole word wiped
-        CHECK(bs.test(3)  == true);   // word 0 is unaffected
+        CHECK(bs.test(36) == false); // target bit cleared (side effect of whole-word wipe)
+        CHECK(bs.test(35) == false); // collateral — whole word wiped
+        CHECK(bs.test(37) == false); // collateral — whole word wiped
+        CHECK(bs.test(3) == true);   // word 0 is unaffected
     }
 }
 
-// ===========================================================================
-// T14 — Construction iteration order (algorithm unchanged)
-// ===========================================================================
+
+/// T14 — Construction iteration order (algorithm unchanged)
 TEST_CASE("T14: Create() consumes each face exactly once, in input order", "[halfedge][T14]") {
     // For a tetrahedron, face i owns half-edges 3i, 3i+1, 3i+2.
     // This is the legacy WriteFace() invariant (T14 pins iteration order).

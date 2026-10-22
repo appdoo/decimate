@@ -19,7 +19,6 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <decimate/chart/chart.h>
@@ -30,10 +29,10 @@
 #include <decimate/reduce/reducer.h>
 
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 #ifndef MESH_FIXTURES_DIR
-#  error "MESH_FIXTURES_DIR must be defined by CMake"
+#error "MESH_FIXTURES_DIR must be defined by CMake"
 #endif
 
 using namespace decimate;
@@ -41,148 +40,183 @@ using namespace decimate::chart;
 
 namespace {
 
-constexpr int kReduceTarget = 1000;  // low-poly target (pipeline decimates first)
+/// Low-poly target: the pipeline decimates before it unwraps.
+constexpr int kReduceTarget = 1000;
+
+/// Cached pipeline output the bench times against; delete it to regenerate.
 const std::string kFixture = std::string(MESH_FIXTURES_DIR) + "/pack_bench.fixture";
 
+/// Milliseconds elapsed since @p t0.
 double msSince(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(
-               std::chrono::steady_clock::now() - t0).count();
+               std::chrono::steady_clock::now() - t0)
+        .count();
 }
 
-// ---- fixture I/O (plain text: counts + values; deterministic, readable) ------
 
+/// Writes a vector as `count v0 v1 ...` (fixture format: plain text, deterministic, readable).
 template <typename T>
-void writeVec(std::ofstream& os, const std::vector<T>& v) {
+void writeVec(std::ofstream &os, const std::vector<T> &v) {
     os << v.size();
-    for (const T& x : v) { os << ' ' << x; }
+    for (const T &x : v) {
+        os << ' ' << x;
+    }
     os << '\n';
 }
-void writeUVs(std::ofstream& os, const std::vector<decimate::math::Vec2<float>>& v) {
+
+
+/// Writes UVs as `count u0 v0 u1 v1 ...`.
+void writeUVs(std::ofstream &os, const std::vector<decimate::math::Vec2f> &v) {
     os << v.size();
-    for (const auto& p : v) { os << ' ' << p.x << ' ' << p.y; }
+    for (const auto &p : v) {
+        os << ' ' << p.x << ' ' << p.y;
+    }
     os << '\n';
 }
-// Positions serialize in the SAME flat-float on-disk format as before the
-// Vec3 storage change: leading count is the FLOAT count (3 per vertex).
-void writePositions(std::ofstream& os, const std::vector<decimate::math::Vec3f>& v) {
+
+
+/// Writes positions in the flat-float on-disk format: the leading count is the FLOAT count (3 per
+/// vertex), so fixtures written before the Vec3 storage change still load.
+void writePositions(std::ofstream &os, const std::vector<decimate::math::Vec3f> &v) {
     os << v.size() * 3;
-    for (const auto& p : v) { os << ' ' << p.x << ' ' << p.y << ' ' << p.z; }
+    for (const auto &p : v) {
+        os << ' ' << p.x << ' ' << p.y << ' ' << p.z;
+    }
     os << '\n';
 }
+
+
+/// Reads what writeVec wrote.
 template <typename T>
-std::vector<T> readVec(std::ifstream& is) {
+std::vector<T> readVec(std::ifstream &is) {
     std::size_t n = 0;
     is >> n;
     std::vector<T> v(n);
-    for (std::size_t i = 0; i < n; ++i) { is >> v[i]; }
-    return v;
-}
-std::vector<decimate::math::Vec3f> readPositions(std::ifstream& is) {
-    std::size_t n = 0;  // float count (3 per vertex)
-    is >> n;
-    std::vector<decimate::math::Vec3f> v(n / 3);
-    for (auto& p : v) { is >> p.x >> p.y >> p.z; }
-    return v;
-}
-std::vector<decimate::math::Vec2<float>> readUVs(std::ifstream& is) {
-    std::size_t n = 0;
-    is >> n;
-    std::vector<decimate::math::Vec2<float>> v(n);
-    for (std::size_t i = 0; i < n; ++i) { is >> v[i].x >> v[i].y; }
+    for (std::size_t i = 0; i < n; ++i) {
+        is >> v[i];
+    }
     return v;
 }
 
+
+/// Reads what writePositions wrote.
+std::vector<decimate::math::Vec3f> readPositions(std::ifstream &is) {
+    std::size_t n = 0; // float count (3 per vertex)
+    is >> n;
+    std::vector<decimate::math::Vec3f> v(n / 3);
+    for (auto &p : v) {
+        is >> p.x >> p.y >> p.z;
+    }
+    return v;
+}
+
+
+/// Reads what writeUVs wrote.
+std::vector<decimate::math::Vec2f> readUVs(std::ifstream &is) {
+    std::size_t n = 0;
+    is >> n;
+    std::vector<decimate::math::Vec2f> v(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        is >> v[i].x >> v[i].y;
+    }
+    return v;
+}
+
+
+/// The cached input of packAtlas: the reduced mesh and its flattened charts.
 struct Fixture {
-    MeshData                data;
+    MeshData                   data;
     std::vector<HalfEdgeChart> charts;
 };
 
+
 /// @brief Rebuild the local HalfEdgeMesh for a HalfEdgeChart from serialized state.
 ///
-/// Reconstructs the per-face local-vertex triples from the chart's mesh face ids
-/// (`c.faces`), the global data indices (`data.indices`), and the local-to-mesh
-/// mapping (`c.localToMesh`), then calls `HalfEdgeMesh::create`.
-static void rebuildChartMesh(HalfEdgeChart& c, const MeshData& data) {
-    const int numLocal = static_cast<int>(c.localToMesh.size());
-    const int numLocalFaces = static_cast<int>(c.faces.size());
-
-    // Build meshId→localIdx reverse map.
-    std::unordered_map<int, int> meshToLocal;
-    meshToLocal.reserve(static_cast<std::size_t>(numLocal));
-    for (int li = 0; li < numLocal; ++li) {
-        meshToLocal[c.localToMesh[static_cast<std::size_t>(li)]] = li;
-    }
-
-    // Build localTri: 3 local indices per mesh face.
-    std::vector<int> localTri;
-    localTri.reserve(static_cast<std::size_t>(numLocalFaces) * 3);
-    for (int fi : c.faces) {
-        const int base = fi * 3;
-        for (int k = 0; k < 3; ++k) {
-            const int vid = data.indices[static_cast<std::size_t>(base + k)];
-            const auto it = meshToLocal.find(vid);
-            if (it != meshToLocal.end()) {
-                localTri.push_back(it->second);
-            } else {
-                localTri.push_back(0);  // degenerate — should not happen
-            }
-        }
-    }
-
+/// @p localTri is the chart's local triangulation: 3 local vertices per chart face, read
+/// from the flattened chart with `localCorner`.  A self-seam cut chart cannot be rebuilt from
+/// `localToMesh` (many-to-one), so the triangulation itself is stored in the fixture.
+void rebuildChartMesh(HalfEdgeChart &c, const std::vector<int> &localTri) {
     c.mesh = HalfEdgeMesh::create(
-        numLocal, numLocalFaces,
-        reinterpret_cast<const Face*>(localTri.data()));
+        static_cast<int>(c.localToMesh.size()), static_cast<int>(c.faces.size()),
+        reinterpret_cast<const Face *>(localTri.data()));
 }
 
-void writeFixture(const Fixture& f, const std::string& path) {
+
+/// The chart's local triangulation: 3 local vertices per chart face (see `rebuildChartMesh`).
+std::vector<int> localTriangulation(const HalfEdgeChart &c) {
+    std::vector<int> localTri;
+    for (int i = 0; i < static_cast<int>(c.faces.size()); ++i) {
+        for (int k = 0; k < 3; ++k) {
+            localTri.push_back(localCorner(c, i, k));
+        }
+    }
+    return localTri;
+}
+
+
+/// Serializes the fixture to @p path.
+void writeFixture(const Fixture &f, const std::string &path) {
     std::ofstream os(path);
     writePositions(os, f.data.positions);
     writeVec(os, f.data.indices);
     os << f.charts.size() << '\n';
-    for (const HalfEdgeChart& c : f.charts) {
+    for (const HalfEdgeChart &c : f.charts) {
         writeVec(os, c.faces);
         writeUVs(os, c.uv);
         writeVec(os, c.localToMesh);
+        writeVec(os, localTriangulation(c));
     }
 }
 
-bool readFixture(Fixture& f, const std::string& path) {
+
+/// Loads the fixture from @p path; false if it is missing or truncated.
+bool readFixture(Fixture &f, const std::string &path) {
     std::ifstream is(path);
-    if (!is) { return false; }
+    if (!is) {
+        return false;
+    }
     f.data.positions = readPositions(is);
-    f.data.indices   = readVec<int>(is);
+    f.data.indices = readVec<int>(is);
     std::size_t nc = 0;
     is >> nc;
-    if (!is) { return false; }
+    if (!is) {
+        return false;
+    }
     f.charts.resize(nc);
-    for (HalfEdgeChart& c : f.charts) {
-        c.faces       = readVec<int>(is);
-        c.uv          = readUVs(is);
+    for (HalfEdgeChart &c : f.charts) {
+        c.faces = readVec<int>(is);
+        c.uv = readUVs(is);
         c.localToMesh = readVec<int>(is);
-        rebuildChartMesh(c, f.data);
+        rebuildChartMesh(c, readVec<int>(is));
     }
     return static_cast<bool>(is);
 }
 
-// Run the slow pipeline once to produce the fixture.
+
+/// Runs the slow pipeline (load, reduce, segment, flatten) once to produce the fixture.
 Fixture generate() {
     Fixture f;
     f.data = load(std::string(MESH_MODEL_DIR) + "/cow.obj");
+
+    // Reduce first, then chartify the low-poly mesh, as the pipeline does.
     f.data = decimate::reduce(f.data, kReduceTarget);
-    const int numFaces = static_cast<int>(f.data.indices.size()) / 3;
-    const int np       = static_cast<int>(f.data.positions.size());
+    const int          numFaces = static_cast<int>(f.data.indices.size()) / 3;
+    const int          np = static_cast<int>(f.data.positions.size());
     const HalfEdgeMesh hem = HalfEdgeMesh::create(
-        np, numFaces, reinterpret_cast<const Face*>(f.data.indices.data()));
+        np, numFaces, reinterpret_cast<const Face *>(f.data.indices.data()));
+
     const ChartSet cs = segment(hem, f.data, 64);
     f.charts.reserve(cs.charts.size());
-    for (const Chart& c : cs.charts) {
+    for (const Chart &c : cs.charts) {
         f.charts.push_back(flatten(hem, f.data, c));
     }
     return f;
 }
 
-}  // namespace
+} // namespace
 
+
+/// Times packAtlas on the cached fixture at three atlas resolutions.
 int main() {
     Fixture fx;
     if (!readFixture(fx, kFixture)) {
@@ -198,17 +232,21 @@ int main() {
                 kReduceTarget, numFaces, fx.charts.size());
     std::printf("(times ONLY packAtlas: 16 rotations x charts x edges -> rasterLine)\n\n");
 
-    for (const int res : {128, 256, 512}) {
+    for (const int res : { 128, 256, 512 }) {
         constexpr int kReps = 15;
-        double total = 0.0;
-        std::int64_t sink = 0;
+        double        total = 0.0;
+        std::int64_t  sink = 0;
         for (int r = 0; r < kReps; ++r) {
-            std::vector<HalfEdgeChart> charts = fx.charts;  // fresh copy (packAtlas mutates uv)
-            const auto t0 = std::chrono::steady_clock::now();
+            // Fresh copy per rep: packAtlas rewrites the UVs in place.
+            std::vector<HalfEdgeChart> charts = fx.charts; // fresh copy (packAtlas mutates uv)
+            const auto                 t0 = std::chrono::steady_clock::now();
             packAtlas(charts, fx.data, res);
             total += msSince(t0);
-            for (const HalfEdgeChart& c : charts) {
-                if (!c.uv.empty()) { sink += static_cast<std::int64_t>(c.uv[0].x * 1000.0F); }
+            // Consume the result so the optimizer cannot drop the timed call.
+            for (const HalfEdgeChart &c : charts) {
+                if (!c.uv.empty()) {
+                    sink += static_cast<std::int64_t>(c.uv[0].x * 1000.0f);
+                }
             }
         }
         std::printf("  res=%-4d : packAtlas mean %8.3f ms  (x%d reps)  [sink %lld]\n",

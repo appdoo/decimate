@@ -1,0 +1,7 @@
+# Formatting-only commits; `git blame` skips them (git config blame.ignoreRevsFile .git-blame-ignore-revs)
+# clang-format of the whole tree, coding style
+f9d1febd4a66d042a4898c740d1208f70a852dbd
+7d019c86865de7f63b76249c4ed00834a5b6613a
+
+# mechanical style pass: Vec aliases, math:: shortening, naming slips
+b475ec2451a452975633978ae9727084ebe5f29f

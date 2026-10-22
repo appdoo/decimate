@@ -16,7 +16,7 @@
  */
 #pragma once
 
-/// @file PureMath.h
+/// @file math.h
 /// @brief Central include for all pure-math types + the canonical version/license
 ///        notice for the library.
 ///
@@ -37,36 +37,43 @@
 
 namespace decimate::math {
 
-// Common mathematical constants
+/// Single-precision mathematical constants.
 namespace constants {
-    constexpr float PI = 3.14159265358979323846f;
-    constexpr float TWO_PI = 2.0f * PI;
-    constexpr float HALF_PI = 0.5f * PI;
-    constexpr float DEG_TO_RAD = PI / 180.0f;
-    constexpr float RAD_TO_DEG = 180.0f / PI;
-    constexpr float EPSILON = 1e-6f;
+constexpr float PI = 3.14159265358979323846f;
+constexpr float TWO_PI = 2.0f * PI;
+constexpr float HALF_PI = 0.5f * PI;
+constexpr float DEG_TO_RAD = PI / 180.0f;
+constexpr float RAD_TO_DEG = 180.0f / PI;
+constexpr float EPSILON = 1e-6f;
+} // namespace constants
+
+
+/// Degrees to radians; T must be a floating-point type (the constant is float precision).
+template <typename T>
+inline constexpr T radians(T degrees) noexcept {
+    return degrees * static_cast<T>(constants::DEG_TO_RAD);
 }
 
-// Utility functions (directly in namespace decimate::math)
-    template<typename T>
-    inline constexpr T radians(T degrees) noexcept {
-        return degrees * static_cast<T>(constants::DEG_TO_RAD);
-    }
 
-    template<typename T>
-    inline constexpr T degrees(T radians) noexcept {
-        return radians * static_cast<T>(constants::RAD_TO_DEG);
-    }
+/// Radians to degrees; T must be a floating-point type (the constant is float precision).
+template <typename T>
+inline constexpr T degrees(T radians) noexcept {
+    return radians * static_cast<T>(constants::RAD_TO_DEG);
+}
 
-    template<typename T>
-    inline constexpr T clamp(T value, T min, T max) noexcept {
-        return value < min ? min : (value > max ? max : value);
-    }
 
-    template<typename T>
-    inline constexpr T lerp(T a, T b, T t) noexcept {
-        return a + t * (b - a);
-    }
+/// @p value limited to [min, max]; requires min <= max.
+template <typename T>
+inline constexpr T clamp(T value, T min, T max) noexcept {
+    return value < min ? min : (value > max ? max : value);
+}
+
+
+/// Linear interpolation a + t * (b - a); t is not clamped, so t outside [0, 1] extrapolates.
+template <typename T>
+inline constexpr T lerp(T a, T b, T t) noexcept {
+    return a + t * (b - a);
+}
 
 } // namespace decimate::math
 

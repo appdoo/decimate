@@ -33,6 +33,9 @@ namespace decimate {
 /// @returns                 Simplified `MeshData` with packed positions and
 ///                          remapped face indices.  All indices are valid
 ///                          (< positions.size()).
-MeshData reduce(const MeshData& input, int targetVertexCount);
+/// @throws std::invalid_argument if a face index is outside `[0, positions.size())`.
+///
+/// Vertices with non-finite positions are never collapsed (their cost is infinite).
+MeshData reduce(const MeshData &input, int targetVertexCount);
 
-}  // namespace decimate
+} // namespace decimate

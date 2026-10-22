@@ -22,10 +22,10 @@
 //
 // The golden input pipeline (all deterministic):
 //   load("model/cow.obj")                        → high (5804 faces)
-//   decimate::reduce(high, REDUCE_TARGET)             → low  (~1500 verts)
+//   decimate::reduce(high, kReduceTarget)             → low  (~1500 verts)
 //   HalfEdgeMesh::create(...)                     → low half-edge connectivity
 //   decimate::chart::segment(hem, low, 64)            → ChartSet
-//   decimate::chart::parametrizeCorners(hem, low, charts, TEX_SIZE) → cornerUV
+//   decimate::chart::parametrizeCorners(hem, low, charts, kTexSize) → cornerUV
 //   createNormals(low)                            → lowNormals (per vertex)
 //   createNormals(high)                           → highNormals (per vertex)
 //   mapnormals(...)                               → 256×256 RGB buffer
@@ -45,28 +45,31 @@
 // IMPORTANT: legacy2003/utility.h is replaced by tests/shim/utility.h (no windows.h).
 // setup_timer / start_timer / stop_timer are no-ops defined below.
 
-// ---------------------------------------------------------------------------
-// In-TU shim: no-op timer stubs (replaces windows.h-dependent utility.cpp)
-// ---------------------------------------------------------------------------
-void setup_timer() {}
-void start_timer() {}
-double stop_timer() { return 0.0; }
+/// In-TU shim: no-op timer stubs (replaces windows.h-dependent utility.cpp)
+void setup_timer() {
+}
 
-// ---------------------------------------------------------------------------
+
+void start_timer() {
+}
+
+
+double stop_timer() {
+    return 0.0;
+}
+
+
 // Legacy cone: texturesample.cpp includes algorithm.h → halfedge.h → cset.h.
 // All of these are header-only or declared-but-not-called, so we only need
 // to link: texturesample.cpp + raytracing.cpp + vec.cpp.
-// ---------------------------------------------------------------------------
 // NOLINTNEXTLINE: intentional .cpp inclusion (capture-only pattern, mirroring capture_golden.cpp)
 #include "../legacy2003/split/texturesample.cpp"
 
-// ---------------------------------------------------------------------------
-// Core APIs for the deterministic input pipeline
-// ---------------------------------------------------------------------------
+// Core APIs for the deterministic input pipeline.
 #include <decimate/chart/chart.h>
 #include <decimate/mesh/half_edge_mesh.h>
 #include <decimate/types/mesh_data.h>
-#include <decimate/bake/normals.h>      // decimate::bake::computeVertexNormals — used for normals in the golden
+#include <decimate/bake/normals.h> // decimate::bake::computeVertexNormals — used for normals in the golden
 #include <decimate/chart/parametrize.h>
 #include <decimate/reduce/reducer.h>
 
@@ -77,11 +80,9 @@ double stop_timer() { return 0.0; }
 #include <string>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Named constants — these are the golden parameters (pinned)
-// ---------------------------------------------------------------------------
-static constexpr int REDUCE_TARGET = 1500;  // QEM target vertex count
-static constexpr int TEX_SIZE      = 256;
+/// The golden parameters (pinned); the tests in bake_characterization.cpp must use the same values.
+static constexpr int kReduceTarget = 1500; // QEM target vertex count
+static constexpr int kTexSize = 256;
 
 // NOTE: We use the CORE computeVertexNormals(EqualUnit) for the normals —
 // not a verbatim legacy createNormals copy.  The purpose:
@@ -95,70 +96,57 @@ static constexpr int TEX_SIZE      = 256;
 // output given a fixed, deterministic input — and core normals are more
 // deterministic across compilers than a verbatim C++03 copy.
 
-// ---------------------------------------------------------------------------
-// SHA-256 (FIPS 180-4) — shared helper extracted to tests/sha256.h
-// ---------------------------------------------------------------------------
+// SHA-256 (FIPS 180-4) lives in tests/sha256.h.
 #include "sha256.h"
 using test_util::sha256Hex;
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
-
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 #ifndef MESH_FIXTURES_DIR
-#  error "MESH_FIXTURES_DIR must be defined by CMake"
+#error "MESH_FIXTURES_DIR must be defined by CMake"
 #endif
 
-int main(int argc, char* argv[]) {
-    const char* outPath = (argc > 1) ? argv[1]
+
+/// Writes the bake golden fixture (argv[1], default tests/fixtures/bake_golden.txt); run by hand to regenerate.
+int main(int argc, char *argv[]) {
+    const char *outPath = (argc > 1) ? argv[1]
                                      : MESH_FIXTURES_DIR "/bake_golden.txt";
 
-    // -----------------------------------------------------------------------
     // Step 1: load cow.obj (high)
-    // -----------------------------------------------------------------------
-    std::string modelPath = std::string(MESH_MODEL_DIR) + "/cow.obj";
+    std::string        modelPath = std::string(MESH_MODEL_DIR) + "/cow.obj";
     decimate::MeshData high = decimate::loadObj(modelPath);
-    const int nhv = static_cast<int>(high.positions.size());
-    const int nhf = static_cast<int>(high.indices.size()) / 3;
+    const int          nhv = static_cast<int>(high.positions.size());
+    const int          nhf = static_cast<int>(high.indices.size()) / 3;
     std::fprintf(stderr, "Loaded high: %d verts, %d faces\n", nhv, nhf);
 
-    // -----------------------------------------------------------------------
     // Step 2: reduce to low
-    // -----------------------------------------------------------------------
-    decimate::MeshData low = decimate::reduce(high, REDUCE_TARGET);
-    const int nlv = static_cast<int>(low.positions.size());
-    const int nlf = static_cast<int>(low.indices.size()) / 3;
+    decimate::MeshData low = decimate::reduce(high, kReduceTarget);
+    const int          nlv = static_cast<int>(low.positions.size());
+    const int          nlf = static_cast<int>(low.indices.size()) / 3;
     std::fprintf(stderr, "Reduced low: %d verts, %d faces\n", nlv, nlf);
 
-    // -----------------------------------------------------------------------
     // Step 3: segment + parametrizeCorners (core, deterministic)
-    // -----------------------------------------------------------------------
     std::vector<decimate::Face> lowFacesCore(nlf);
     for (int i = 0; i < nlf; i++) {
-        lowFacesCore[i] = {low.indices[3 * i + 0],
-                           low.indices[3 * i + 1],
-                           low.indices[3 * i + 2]};
+        lowFacesCore[i] = { low.indices[3 * i + 0],
+                            low.indices[3 * i + 1],
+                            low.indices[3 * i + 2] };
     }
-    decimate::HalfEdgeMesh hem = decimate::HalfEdgeMesh::create(nlv, nlf, lowFacesCore.data());
-    decimate::chart::ChartSet charts = decimate::chart::segment(hem, low, 64);
-    std::vector<decimate::math::Vec2<float>> cornerUV =
-        decimate::chart::parametrizeCorners(hem, low, charts, TEX_SIZE);
+    decimate::HalfEdgeMesh             hem = decimate::HalfEdgeMesh::create(nlv, nlf, lowFacesCore.data());
+    decimate::chart::ChartSet          charts = decimate::chart::segment(hem, low, 64);
+    std::vector<decimate::math::Vec2f> cornerUV =
+        decimate::chart::parametrizeCorners(hem, low, charts, kTexSize);
 
-    // -----------------------------------------------------------------------
     // Step 4: compute vertex normals via core API (EqualUnit = 2003 algorithm)
     //
     // Using core computeVertexNormals (not legacy createNormals) so the golden
     // is produced with the same normal values as the B1 characterization test.
     // This isolates the bake KERNEL in the golden comparison; B2/B3 tests
     // validate computeVertexNormals independently with exact cube values.
-    // -----------------------------------------------------------------------
-    auto lowNormsVec  = decimate::bake::computeVertexNormals(low,  decimate::bake::Weighting::EqualUnit);
+    auto lowNormsVec = decimate::bake::computeVertexNormals(low, decimate::bake::Weighting::EqualUnit);
     auto highNormsVec = decimate::bake::computeVertexNormals(high, decimate::bake::Weighting::EqualUnit);
 
-    // -----------------------------------------------------------------------
     // Step 5: expand to per-corner (wedge) layout for legacy mapnormals
     //
     // Legacy mapfacert reads tex[f->a], lowPoints[f->a], lowNormals[f->a]
@@ -172,7 +160,6 @@ int main(int argc, char* argv[]) {
     //
     // This replicates exactly what the core bake() does (reads lowCornerUV
     // and lowNormals indexed by low.indices[3*fi+k]).
-    // -----------------------------------------------------------------------
     const int ncorners = 3 * nlf;
 
     std::vector<Vec3>   cornerPts(ncorners);
@@ -182,32 +169,32 @@ int main(int argc, char* argv[]) {
 
     for (int fi = 0; fi < nlf; fi++) {
         for (int k = 0; k < 3; k++) {
-            int ci  = 3 * fi + k;
-            int vi  = low.indices[ci];
-            const auto& lp = low.positions[static_cast<std::size_t>(vi)];
+            int         ci = 3 * fi + k;
+            int         vi = low.indices[ci];
+            const auto &lp = low.positions[static_cast<std::size_t>(vi)];
 
-            cornerPts[ci].x   = lp.x;
-            cornerPts[ci].y   = lp.y;
-            cornerPts[ci].z   = lp.z;
+            cornerPts[ci].x = lp.x;
+            cornerPts[ci].y = lp.y;
+            cornerPts[ci].z = lp.z;
 
-            cornerNrms[ci].x  = lowNormsVec[vi].x;
-            cornerNrms[ci].y  = lowNormsVec[vi].y;
-            cornerNrms[ci].z  = lowNormsVec[vi].z;
+            cornerNrms[ci].x = lowNormsVec[vi].x;
+            cornerNrms[ci].y = lowNormsVec[vi].y;
+            cornerNrms[ci].z = lowNormsVec[vi].z;
 
-            cornerTex[ci].u   = cornerUV[ci].x;
-            cornerTex[ci].v   = cornerUV[ci].y;
+            cornerTex[ci].u = cornerUV[ci].x;
+            cornerTex[ci].v = cornerUV[ci].y;
         }
-        cornerFaces[fi] = {3 * fi + 0, 3 * fi + 1, 3 * fi + 2};
+        cornerFaces[fi] = { 3 * fi + 0, 3 * fi + 1, 3 * fi + 2 };
     }
 
     // High mesh: per-vertex positions + normals (unchanged from core vectors)
     std::vector<Vec3> highPtsArr(nhv);
     std::vector<Vec3> highNrmsArr(nhv);
     for (int i = 0; i < nhv; i++) {
-        const auto& hp   = high.positions[static_cast<std::size_t>(i)];
-        highPtsArr[i].x  = hp.x;
-        highPtsArr[i].y  = hp.y;
-        highPtsArr[i].z  = hp.z;
+        const auto &hp = high.positions[static_cast<std::size_t>(i)];
+        highPtsArr[i].x = hp.x;
+        highPtsArr[i].y = hp.y;
+        highPtsArr[i].z = hp.z;
         highNrmsArr[i].x = highNormsVec[i].x;
         highNrmsArr[i].y = highNormsVec[i].y;
         highNrmsArr[i].z = highNormsVec[i].z;
@@ -216,12 +203,11 @@ int main(int argc, char* argv[]) {
     // Build per-vertex high face array (indices stay the same)
     std::vector<::Face> highFacesArr(nhf);
     for (int i = 0; i < nhf; i++) {
-        highFacesArr[i] = {high.indices[3 * i + 0],
-                           high.indices[3 * i + 1],
-                           high.indices[3 * i + 2]};
+        highFacesArr[i] = { high.indices[3 * i + 0],
+                            high.indices[3 * i + 1],
+                            high.indices[3 * i + 2] };
     }
 
-    // -----------------------------------------------------------------------
     // Step 6: run the bake kernel (brute-force, bypassing getTestFaces)
     //
     // The legacy mapnormals uses getTestFaces (6-plane prism cull) to restrict
@@ -239,16 +225,15 @@ int main(int argc, char* argv[]) {
     // different functions from it.  This is explicitly permitted by the spec:
     // "omit it (brute-force ALL high faces)" is listed as the allowed option.
     //
-    // Forward-declare the functions from the included texturesample.cpp:
-    // -----------------------------------------------------------------------
-    std::vector<rgb> mem(TEX_SIZE * TEX_SIZE);
+    // The kernel functions below come straight from the included texturesample.cpp.
+    std::vector<rgb> mem(kTexSize * kTexSize);
 
     // Clear with background sentinel
-    normalmap::cleartexture(TEX_SIZE, mem.data(), 128, 128, 128);
+    normalmap::cleartexture(kTexSize, mem.data(), 128, 128, 128);
 
     // Rasterize + raytrace each low face against ALL high faces (brute-force)
     for (int fi = 0; fi < nlf; fi++) {
-        normalmap::mapfacert(TEX_SIZE, mem.data(),
+        normalmap::mapfacert(kTexSize, mem.data(),
                              &cornerFaces[fi],
                              cornerTex.data(),
                              cornerPts.data(),
@@ -259,20 +244,17 @@ int main(int argc, char* argv[]) {
     }
 
     // Dilation: fill background texels from neighbours
-    normalmap::dilate(mem.data(), TEX_SIZE);
+    normalmap::dilate(mem.data(), kTexSize);
 
-    // -----------------------------------------------------------------------
     // Step 7: SHA-256 of the flat RGB pixel buffer
-    // -----------------------------------------------------------------------
-    std::vector<std::uint8_t> flat(TEX_SIZE * TEX_SIZE * 3);
-    for (int i = 0; i < TEX_SIZE * TEX_SIZE; i++) {
+    std::vector<std::uint8_t> flat(kTexSize * kTexSize * 3);
+    for (int i = 0; i < kTexSize * kTexSize; i++) {
         flat[3 * i + 0] = mem[i].r;
         flat[3 * i + 1] = mem[i].g;
         flat[3 * i + 2] = mem[i].b;
     }
     std::string sha = sha256Hex(flat.data(), flat.size());
 
-    // -----------------------------------------------------------------------
     // Step 7b: compute legacy vertex normals using the LEGACY Vec3 type.
     //
     // This is a verbatim inline copy of legacy2003/main.cpp createNormals()
@@ -287,8 +269,7 @@ int main(int argc, char* argv[]) {
     // of comparing the core port against itself, the characterization test
     // compares it against normals computed by the LEGACY-compiled createNormals
     // loop.
-    // -----------------------------------------------------------------------
-    const int legNlv = nlv;
+    const int         legNlv = nlv;
     std::vector<Vec3> legNormals(legNlv);
     std::memset(legNormals.data(), 0, sizeof(Vec3) * legNlv);
 
@@ -297,7 +278,7 @@ int main(int argc, char* argv[]) {
     // We need per-VERTEX coords; use low.positions directly.
     std::vector<Vec3> legCoords(legNlv);
     for (int i = 0; i < legNlv; i++) {
-        const auto& lp = low.positions[static_cast<std::size_t>(i)];
+        const auto &lp = low.positions[static_cast<std::size_t>(i)];
         legCoords[i].x = lp.x;
         legCoords[i].y = lp.y;
         legCoords[i].z = lp.z;
@@ -306,18 +287,18 @@ int main(int argc, char* argv[]) {
     // Build legacy Face array for the reduced low mesh.
     std::vector<::Face> legFaces(nlf);
     for (int i = 0; i < nlf; i++) {
-        legFaces[i] = {low.indices[3 * i + 0],
-                       low.indices[3 * i + 1],
-                       low.indices[3 * i + 2]};
+        legFaces[i] = { low.indices[3 * i + 0],
+                        low.indices[3 * i + 1],
+                        low.indices[3 * i + 2] };
     }
 
-    // Verbatim createNormals loop from legacy2003/main.cpp:92-107.
+    // Verbatim createNormals loop from legacy2003/main.cpp:89-104.
     // Uses legacy Vec3::operator^, Vec3::operator+=, Vec3::norm() — all
     // compiled by this TU against the legacy definitions from vec.h.
     for (int i = 0; i < nlf; i++) {
         Vec3 a = legCoords[legFaces[i].b] - legCoords[legFaces[i].a];
         Vec3 b = legCoords[legFaces[i].c] - legCoords[legFaces[i].a];
-        Vec3 nrm = (a ^ b).norm();  // normalize face normal BEFORE accumulating
+        Vec3 nrm = (a ^ b).norm(); // normalize face normal BEFORE accumulating
         legNormals[legFaces[i].a] += nrm;
         legNormals[legFaces[i].b] += nrm;
         legNormals[legFaces[i].c] += nrm;
@@ -326,10 +307,8 @@ int main(int argc, char* argv[]) {
         legNormals[i].norm();
     }
 
-    // -----------------------------------------------------------------------
     // Step 8: write golden fixture
-    // -----------------------------------------------------------------------
-    FILE* fp = std::fopen(outPath, "w");
+    FILE *fp = std::fopen(outPath, "w");
     if (!fp) {
         std::fprintf(stderr, "Cannot open output: %s\n", outPath);
         return 1;
@@ -338,18 +317,18 @@ int main(int argc, char* argv[]) {
     std::fprintf(fp, "buffer_sha256 = %s\n", sha.c_str());
 
     // Exact texel anchors (5 well-distributed coordinates)
-    int anchorCoords[][2] = {{0, 0}, {127, 127}, {63, 191}, {200, 50}, {50, 200}};
-    for (auto& ac : anchorCoords) {
-        int x   = ac[0];
-        int y   = ac[1];
-        int idx = y * TEX_SIZE + x;
+    int anchorCoords[][2] = { { 0, 0 }, { 127, 127 }, { 63, 191 }, { 200, 50 }, { 50, 200 } };
+    for (auto &ac : anchorCoords) {
+        int x = ac[0];
+        int y = ac[1];
+        int idx = y * kTexSize + x;
         std::fprintf(fp, "texel %d %d = %d %d %d\n",
                      x, y, mem[idx].r, mem[idx].g, mem[idx].b);
     }
 
     // Vertex-normal anchors (core port values — used by the B2 anchor cross-check).
     // These are CORE-computed and written so the B1/B2 hash + anchor tests remain stable.
-    int normalIdxs[] = {0, 1, 42};
+    int normalIdxs[] = { 0, 1, 42 };
     for (int ni : normalIdxs) {
         std::fprintf(fp, "vertex_normal %d = %.8f %.8f %.8f\n",
                      ni,
@@ -366,8 +345,8 @@ int main(int argc, char* argv[]) {
                      legNormals[ni].x, legNormals[ni].y, legNormals[ni].z);
     }
 
-    std::fprintf(fp, "reduce_target = %d\n", REDUCE_TARGET);
-    std::fprintf(fp, "tex_size = %d\n", TEX_SIZE);
+    std::fprintf(fp, "reduce_target = %d\n", kReduceTarget);
+    std::fprintf(fp, "tex_size = %d\n", kTexSize);
 
     std::fclose(fp);
     std::printf("Golden fixture written to: %s\n", outPath);

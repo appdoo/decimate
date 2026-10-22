@@ -17,36 +17,40 @@
 #include <decimate/types/mesh_data.h>
 
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 
 using namespace decimate;
 
 namespace {
 
+/// Builds a MeshData from flat xyz triples and a triangle index list.
 MeshData makeMesh(std::vector<float> xyz, std::vector<int> tris) {
     MeshData m;
     for (std::size_t i = 0; i + 3 <= xyz.size(); i += 3) {
-        m.positions.push_back({xyz[i], xyz[i + 1], xyz[i + 2]});
+        m.positions.push_back({ xyz[i], xyz[i + 1], xyz[i + 2] });
     }
     m.indices = std::move(tris);
     return m;
 }
 
+
+/// spot.obj ships in the repo (CC0): the at-scale fixture of this file.
 MeshData loadSpot() {
     return loadObj(std::string(MESH_MODEL_DIR) + "/spot.obj");
 }
 
-}  // namespace
+} // namespace
 
-// C1 [S] — two triangles far apart stay two distinct representatives; they must
-// not merge into one point even under maximal clustering.
+
+/// C1 [S] — two triangles far apart stay two distinct representatives; they must
+/// not merge into one point even under maximal clustering.
 TEST_CASE("C1: separated geometry does not merge", "[cluster][state]") {
     // Triangle A near x=0, triangle B near x=1000.
     MeshData m = makeMesh(
-        {0, 0, 0, 1, 0, 0, 0, 1, 0,           // A
-         1000, 0, 0, 1001, 0, 0, 1000, 1, 0},  // B
-        {0, 1, 2, 3, 4, 5});
+        { 0, 0, 0, 1, 0, 0, 0, 1, 0,            // A
+          1000, 0, 0, 1001, 0, 0, 1000, 1, 0 }, // B
+        { 0, 1, 2, 3, 4, 5 });
 
     const MeshData out = reduceClustering(m, 2);
 
@@ -54,81 +58,90 @@ TEST_CASE("C1: separated geometry does not merge", "[cluster][state]") {
     // triangles, so every representative sits in A's or B's region — clamping
     // to a cell's vertex AABB guarantees it. Exact cluster count depends on how
     // the octree splits each triangle, so we assert the separation, not a count.
+
     bool nearOrigin = false;
-    bool nearFar    = false;
-    for (const auto& p : out.positions) {
-        REQUIRE((p.x <= 1.001F || p.x >= 999.999F));  // never stranded mid-gap
-        nearOrigin = nearOrigin || (p.x <= 1.001F);
-        nearFar    = nearFar || (p.x >= 999.999F);
+    bool nearFar = false;
+    for (const auto &p : out.positions) {
+        REQUIRE((p.x <= 1.001f || p.x >= 999.999f)); // never stranded mid-gap
+        nearOrigin = nearOrigin || (p.x <= 1.001f);
+        nearFar = nearFar || (p.x >= 999.999f);
     }
-    REQUIRE(nearOrigin);   // the origin triangle survived
-    REQUIRE(nearFar);      // the far triangle survived
-    REQUIRE(out.indices.empty());  // each triangle collapsed within itself -> dropped
+    REQUIRE(nearOrigin);          // the origin triangle survived
+    REQUIRE(nearFar);             // the far triangle survived
+    REQUIRE(out.indices.empty()); // each triangle collapsed within itself -> dropped
 }
 
-// C2 [S] — coplanar vertices in one cell collapse to a single representative
-// that lies on their shared plane.
+
+/// C2 [S] — coplanar vertices in one cell collapse to a single representative
+/// that lies on their shared plane.
 TEST_CASE("C2: coplanar cluster collapses onto its plane", "[cluster][state]") {
     // Unit quad in the z=0 plane, two triangles.
-    MeshData m = makeMesh({0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0},
-                          {0, 1, 2, 0, 2, 3});
+    MeshData m = makeMesh({ 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0 },
+                          { 0, 1, 2, 0, 2, 3 });
 
     const MeshData out = reduceClustering(m, 1);
 
     REQUIRE(out.positions.size() == 1);
-    REQUIRE(out.positions[0].z == Catch::Approx(0.0).margin(1e-5));  // on the plane
-    REQUIRE(out.indices.empty());                                    // all faces degenerate
+    REQUIRE(out.positions[0].z == Catch::Approx(0.0).margin(1e-5)); // on the plane
+    REQUIRE(out.indices.empty());                                   // all faces degenerate
 }
 
-// C3 [I] — aggressive clustering of a real mesh yields a valid, reduced mesh:
-// fewer verts/faces, every index in range, no degenerate triangle, no NaN.
+
+/// C3 [I] — aggressive clustering of a real mesh yields a valid, reduced mesh:
+/// fewer verts/faces, every index in range, no degenerate triangle, no NaN.
 TEST_CASE("C3: spot.obj clusters to a valid reduced mesh", "[cluster][integration]") {
+    // Precondition: the mesh is big enough for a 4x reduction to mean something.
     const MeshData in = loadSpot();
     REQUIRE(in.positions.size() > 100);
 
-    const int target = static_cast<int>(in.positions.size()) / 4;
+    const int      target = static_cast<int>(in.positions.size()) / 4;
     const MeshData out = reduceClustering(in, target);
 
     const int outV = static_cast<int>(out.positions.size());
     REQUIRE(outV > 0);
-    REQUIRE(outV < static_cast<int>(in.positions.size()));            // reduced
-    REQUIRE(out.indices.size() < in.indices.size());                  // fewer faces
+    REQUIRE(outV < static_cast<int>(in.positions.size())); // reduced
+    REQUIRE(out.indices.size() < in.indices.size());       // fewer faces
 
-    for (const auto& p : out.positions) {
+    // Clamping to the cell box must never produce NaN/inf.
+    for (const auto &p : out.positions) {
         REQUIRE(std::isfinite(p.x));
         REQUIRE(std::isfinite(p.y));
         REQUIRE(std::isfinite(p.z));
     }
 
+    // Index validity and non-degeneracy of every surviving triangle.
     const int triCount = static_cast<int>(out.indices.size()) / 3;
     for (int t = 0; t < triCount; ++t) {
         const std::size_t base = static_cast<std::size_t>(t) * 3;
-        const int a = out.indices[base];
-        const int b = out.indices[base + 1];
-        const int c = out.indices[base + 2];
+        const int         a = out.indices[base];
+        const int         b = out.indices[base + 1];
+        const int         c = out.indices[base + 2];
         REQUIRE((a >= 0 && a < outV));
         REQUIRE((b >= 0 && b < outV));
         REQUIRE((c >= 0 && c < outV));
-        REQUIRE((a != b && b != c && a != c));   // no degenerate survived
+        REQUIRE((a != b && b != c && a != c)); // no degenerate survived
     }
 }
 
-// C4 [S] — clamp invariant: every representative is clamped to its cell box, so
-// the output bounding box can never exceed the input bounding box.
+
+/// C4 [S] — clamp invariant: every representative is clamped to its cell box, so
+/// the output bounding box can never exceed the input bounding box.
 TEST_CASE("C4: output stays within the input bounding box", "[cluster][state]") {
     const MeshData in = loadSpot();
 
+    // Input bounding box.
     math::Vec3f lo = in.positions[0];
     math::Vec3f hi = in.positions[0];
-    for (const auto& p : in.positions) {
-        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
-        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    for (const auto &p : in.positions) {
+        lo = { std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z) };
+        hi = { std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z) };
     }
 
     const MeshData out = reduceClustering(in, static_cast<int>(in.positions.size()) / 8);
 
-    const float eps = 1e-4F;
-    for (const auto& p : out.positions) {
+    // eps absorbs float rounding of the cell-box clamp.
+    const float eps = 1e-4f;
+    for (const auto &p : out.positions) {
         REQUIRE(p.x >= lo.x - eps);
         REQUIRE(p.x <= hi.x + eps);
         REQUIRE(p.y >= lo.y - eps);
@@ -138,14 +151,16 @@ TEST_CASE("C4: output stays within the input bounding box", "[cluster][state]") 
     }
 }
 
-// C5 [I] — determinism: identical input + target -> identical output.
+
+/// C5 [I] — determinism: identical input + target -> identical output.
 TEST_CASE("C5: reduceClustering is deterministic", "[cluster][integration]") {
     const MeshData in = loadSpot();
-    const int target = static_cast<int>(in.positions.size()) / 4;
+    const int      target = static_cast<int>(in.positions.size()) / 4;
 
     const MeshData a = reduceClustering(in, target);
     const MeshData b = reduceClustering(in, target);
 
+    // Bit-identical, not approximately equal.
     REQUIRE(a.indices == b.indices);
     REQUIRE(a.positions.size() == b.positions.size());
     for (std::size_t i = 0; i < a.positions.size(); ++i) {
@@ -155,15 +170,16 @@ TEST_CASE("C5: reduceClustering is deterministic", "[cluster][integration]") {
     }
 }
 
-// C6 [I] — survival: at a mild target the mesh is not annihilated; a substantial
-// fraction of faces survives (the decimator produces a usable LOD, not a blob).
+
+/// C6 [I] — survival: at a mild target the mesh is not annihilated; a substantial
+/// fraction of faces survives (the decimator produces a usable LOD, not a blob).
 TEST_CASE("C6: moderate reduction keeps the mesh usable", "[cluster][integration]") {
     const MeshData in = loadSpot();
-    const int inFaces = static_cast<int>(in.indices.size()) / 3;
+    const int      inFaces = static_cast<int>(in.indices.size()) / 3;
 
     const MeshData out = reduceClustering(in, static_cast<int>(in.positions.size()) / 2);
-    const int outFaces = static_cast<int>(out.indices.size()) / 3;
+    const int      outFaces = static_cast<int>(out.indices.size()) / 3;
 
-    REQUIRE(outFaces > inFaces / 4);                 // mesh largely survives
-    REQUIRE(outFaces < inFaces);                     // but was reduced
+    REQUIRE(outFaces > inFaces / 4); // mesh largely survives
+    REQUIRE(outFaces < inFaces);     // but was reduced
 }

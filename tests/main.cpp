@@ -17,7 +17,8 @@
 #include "Stacktrace.h"
 #endif
 
-int main(int argc, char* argv[]) {
+/// Test runner entry: crash handler first (host-only), then Catch2.
+int main(int argc, char *argv[]) {
 #ifdef STACKTRACE_ENABLED
     diag::Stacktrace::installCrashHandler();
 #endif
@@ -25,14 +26,12 @@ int main(int argc, char* argv[]) {
     return Catch::Session().run(argc, argv);
 }
 
-// ---------------------------------------------------------------------------
-// mesh-core smoke tests
-// ---------------------------------------------------------------------------
-// These tests verify that mesh-core is a real, linkable STATIC library and
-// that its public API is reachable from the test runner.
 
 #include <catch2/catch_test_macros.hpp>
 
+
+/// mesh-core smoke test: the core is a real, linkable STATIC library and its public API is reachable from the
+/// test runner.
 TEST_CASE("decimate::version returns expected version", "[core][smoke]") {
-    REQUIRE(decimate::version() == 6);
+    REQUIRE(decimate::version() == 7);
 }

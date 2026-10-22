@@ -3,7 +3,7 @@
 /// @brief Open Inventor ASCII (.iv) mesh loader — behavior-preserving port of
 ///        legacy InventorLdr::load.
 ///
-/// Ported from legacy/loader/InventorLdr.cpp (Spec 06, Beat 2a).
+/// Ported from legacy2003/loader/InventorLdr.cpp (Spec 06, Beat 2a).
 ///
 /// Representation changes (no algorithmic or numeric effect):
 ///   - Output is MeshData (owned std::vector) instead of raw new[]/out-params.
@@ -16,7 +16,7 @@
 ///     recursive-descent over the Lexer token stream.
 ///   - Coordinate3: reads comma-separated XYZ float triples.
 ///   - IndexedFaceSet: reads exactly four ints per face (three indices + the
-///     -1 terminator consumed and discarded at InventorLdr.cpp:210-211).
+///     -1 terminator consumed and discarded at legacy2003/loader/InventorLdr.cpp:210-211).
 ///   - Material / MaterialBinding: silently skipped.
 ///   - Triangle-only: hardcodes four-token reads per face (InventorLdr behavior).
 
@@ -30,61 +30,77 @@
 
 namespace decimate {
 
-// ---------------------------------------------------------------------------
-// IV keyword tokens
-// ---------------------------------------------------------------------------
-// Token values mirror the legacy InventorLdr enum: the first keyword is
-// Token::UserToken (15) and each subsequent keyword adds 1.
+namespace {
 
+/// Inventor keyword tokens. Values mirror the legacy InventorLdr enum: the first keyword is
+/// Token::UserToken (15) and each subsequent keyword adds 1.
 namespace iv {
 
 constexpr int kBase = static_cast<int>(Token::UserToken);
 
 enum Tok : int {
-    kInventor = kBase, kSeparator, kCoordinate3, kPoint, kMaterial, kDiffuseColor,
-    kMaterialBinding, kValue, kPerVertexIndexed, kIndexedFaceSet, kCoordIndex,
-    kMaterialIndex, kAscii,
+    kInventor = kBase,
+    kSeparator,
+    kCoordinate3,
+    kPoint,
+    kMaterial,
+    kDiffuseColor,
+    kMaterialBinding,
+    kValue,
+    kPerVertexIndexed,
+    kIndexedFaceSet,
+    kCoordIndex,
+    kMaterialIndex,
+    kAscii,
 };
 
-// Keyword table (uppercased; the lexer matches case-insensitively). The order
-// is irrelevant to correctness — each entry pairs its spelling with its token.
-constexpr std::array<Lexer::Keyword, 13> kKeywords{{
-    {"#INVENTOR", kInventor},          {"SEPARATOR", kSeparator},
-    {"COORDINATE3", kCoordinate3},     {"POINT", kPoint},
-    {"MATERIAL", kMaterial},           {"DIFFUSECOLOR", kDiffuseColor},
-    {"MATERIALBINDING", kMaterialBinding}, {"VALUE", kValue},
-    {"PER_VERTEX_INDEXED", kPerVertexIndexed}, {"INDEXEDFACESET", kIndexedFaceSet},
-    {"COORDINDEX", kCoordIndex},       {"MATERIALINDEX", kMaterialIndex},
-    {"ASCII", kAscii},
-}};
+/// Keyword table (uppercased; the lexer matches case-insensitively). The order
+/// is irrelevant to correctness — each entry pairs its spelling with its token.
+constexpr std::array<Lexer::Keyword, 13> kKeywords { {
+    { "#INVENTOR", kInventor },
+    { "SEPARATOR", kSeparator },
+    { "COORDINATE3", kCoordinate3 },
+    { "POINT", kPoint },
+    { "MATERIAL", kMaterial },
+    { "DIFFUSECOLOR", kDiffuseColor },
+    { "MATERIALBINDING", kMaterialBinding },
+    { "VALUE", kValue },
+    { "PER_VERTEX_INDEXED", kPerVertexIndexed },
+    { "INDEXEDFACESET", kIndexedFaceSet },
+    { "COORDINDEX", kCoordIndex },
+    { "MATERIALINDEX", kMaterialIndex },
+    { "ASCII", kAscii },
+} };
 
-}  // namespace iv
+} // namespace iv
 
-// ---------------------------------------------------------------------------
-// readCoordinate3 — port of InventorLdr::readCoordinate3 (InventorLdr.cpp:108)
-// ---------------------------------------------------------------------------
-// Reads: { POINT [ <float triples separated by commas> ] }
-// Populates coords with one Vec3f per vertex.
+} // namespace
 
-// Reads one "x y z" triple. The first component is already lexed (FLOAT or INT,
-// read via getFloat()); the next two are matched as FLOAT. (Legacy InventorLdr
-// only matched FLOAT; an INT-first component reads identically via getFloat().)
-static decimate::math::Vec3f readVertexTriple(Lexer& lexer) {
-    decimate::math::Vec3f v;
+
+/// Reads one "x y z" triple. The first component is already lexed (FLOAT or INT,
+/// read via getFloat()); the next two are matched as FLOAT, so an INT-spelled y or z is a
+/// ParseError. (Legacy InventorLdr only matched FLOAT: legacy2003/loader/InventorLdr.cpp:123,126.)
+static math::Vec3f readVertexTriple(Lexer &lexer) {
+    math::Vec3f v;
     v.x = lexer.getFloat();
     lexer.match(static_cast<int>(Token::FLOAT));
     v.y = lexer.getFloat();
     lexer.match(static_cast<int>(Token::FLOAT));
     v.z = lexer.getFloat();
+
     return v;
 }
 
-static void readCoordinate3(Lexer& lexer, std::vector<decimate::math::Vec3f>& coords) {
+
+/// Port of InventorLdr::readCoordinate3 (legacy2003/loader/InventorLdr.cpp:108).
+/// Reads `{ POINT [ <float triples separated by commas> ] }` and appends one Vec3f per vertex.
+static void readCoordinate3(Lexer &lexer, std::vector<math::Vec3f> &coords) {
     lexer.match(static_cast<int>(Token::BROPEN));
     lexer.match(iv::kPoint);
     lexer.match(static_cast<int>(Token::SQUAREOPEN));
 
     int token = 0;
+
     while ((token = lexer.lex()) != EOF) {
         switch (token) {
             // FLOAT or INT both begin a vertex triple (see readVertexTriple).
@@ -94,7 +110,7 @@ static void readCoordinate3(Lexer& lexer, std::vector<decimate::math::Vec3f>& co
                 break;
 
             case static_cast<int>(Token::COMMA):
-                break;  // separator between triples, skip
+                break; // separator between triples, skip
 
             case static_cast<int>(Token::SQUARECLOSE):
                 lexer.match(static_cast<int>(Token::BRCLOSE));
@@ -107,13 +123,12 @@ static void readCoordinate3(Lexer& lexer, std::vector<decimate::math::Vec3f>& co
     throw ParseError("Unexpected end of file in Coordinate3 block");
 }
 
-// ---------------------------------------------------------------------------
-// readMaterial — port of InventorLdr::readMaterial (InventorLdr.cpp:149)
-// ---------------------------------------------------------------------------
-// Silently consumes everything until the matching closing brace.
 
-static void readMaterial(Lexer& lexer) {
+/// Port of InventorLdr::readMaterial (legacy2003/loader/InventorLdr.cpp:149):
+/// silently consumes everything up to the first closing brace (nested braces are not tracked).
+static void readMaterial(Lexer &lexer) {
     lexer.match(static_cast<int>(Token::BROPEN));
+
     int token = 0;
     while ((token = lexer.lex()) != EOF) {
         if (token == static_cast<int>(Token::BRCLOSE)) {
@@ -123,12 +138,11 @@ static void readMaterial(Lexer& lexer) {
     throw ParseError("Unexpected end of file in Material block");
 }
 
-// ---------------------------------------------------------------------------
-// readMaterialBinding — port of InventorLdr::readMaterialBinding (line 170)
-// ---------------------------------------------------------------------------
 
-static void readMaterialBinding(Lexer& lexer) {
+/// Port of InventorLdr::readMaterialBinding (legacy2003/loader/InventorLdr.cpp:170): skips the block like readMaterial.
+static void readMaterialBinding(Lexer &lexer) {
     lexer.match(static_cast<int>(Token::BROPEN));
+
     int token = 0;
     while ((token = lexer.lex()) != EOF) {
         if (token == static_cast<int>(Token::BRCLOSE)) {
@@ -138,15 +152,12 @@ static void readMaterialBinding(Lexer& lexer) {
     throw ParseError("Unexpected end of file in MaterialBinding block");
 }
 
-// ---------------------------------------------------------------------------
-// readIndexedFaceSet — port of InventorLdr::readIndexedFaceSet (line 191)
-// ---------------------------------------------------------------------------
-// Reads: { COORDINDEX [ <v0, v1, v2, -1,>... ] }
-// The -1 terminator is the fourth INT in each group — it is consumed and
-// discarded (InventorLdr.cpp:210-211).  Triangle-only: exactly 3 indices + -1
-// per face.
 
-static void readIndexedFaceSet(Lexer& lexer, std::vector<int>& faces) {
+/// Port of InventorLdr::readIndexedFaceSet (legacy2003/loader/InventorLdr.cpp:191).
+/// Reads `{ COORDINDEX [ <v0, v1, v2, -1,>... ] }`. The -1 terminator is the fourth INT in each
+/// group — it is consumed and discarded (legacy2003/loader/InventorLdr.cpp:210-211).
+/// Triangle-only: exactly 3 indices + -1 per face; a quad or n-gon is a ParseError.
+static void readIndexedFaceSet(Lexer &lexer, std::vector<int> &faces) {
     lexer.match(static_cast<int>(Token::BROPEN));
     lexer.match(iv::kCoordIndex);
     lexer.match(static_cast<int>(Token::SQUAREOPEN));
@@ -167,15 +178,14 @@ static void readIndexedFaceSet(Lexer& lexer, std::vector<int>& faces) {
                 faces.push_back(lexer.getInt());
                 lexer.match(static_cast<int>(Token::COMMA));
 
-                // Consume the -1 terminator (InventorLdr.cpp:210-211).
+                // The -1 face terminator is read but its value is never checked or stored.
                 lexer.match(static_cast<int>(Token::INT));
-                // -1 is read but not pushed; discard.
                 lexer.match(static_cast<int>(Token::COMMA));
                 break;
             }
 
             case static_cast<int>(Token::COMMA):
-                break;  // extra comma between faces, skip
+                break; // extra comma between faces, skip
 
             case static_cast<int>(Token::SQUARECLOSE):
                 return;
@@ -187,11 +197,10 @@ static void readIndexedFaceSet(Lexer& lexer, std::vector<int>& faces) {
     throw ParseError("Unexpected end of file in IndexedFaceSet block");
 }
 
-// ---------------------------------------------------------------------------
-// readSeparator — port of InventorLdr::readSeparator (InventorLdr.cpp:72)
-// ---------------------------------------------------------------------------
 
-static void readSeparator(Lexer& lexer, std::vector<decimate::math::Vec3f>& coords, std::vector<int>& faces) {
+/// Port of InventorLdr::readSeparator (legacy2003/loader/InventorLdr.cpp:72): dispatches the
+/// known child nodes of a Separator and ignores everything else.
+static void readSeparator(Lexer &lexer, std::vector<math::Vec3f> &coords, std::vector<int> &faces) {
     lexer.match(static_cast<int>(Token::BROPEN));
 
     int token = 0;
@@ -217,18 +226,17 @@ static void readSeparator(Lexer& lexer, std::vector<decimate::math::Vec3f>& coor
                 return;
 
             default:
-                break;  // ignore unrecognised tokens inside a Separator
+                break; // ignore unrecognised tokens inside a Separator
         }
     }
     throw ParseError("Unexpected end of file in Separator block");
 }
 
-// ---------------------------------------------------------------------------
-// loadInventor — port of InventorLdr::load (InventorLdr.cpp:48)
-// ---------------------------------------------------------------------------
 
+/// Port of InventorLdr::load (legacy2003/loader/InventorLdr.cpp:48); contract in mesh_data.h.
 MeshData loadInventor(std::string_view path) {
-    Lexer lexer{std::string(path)};
+    Lexer lexer { std::string(path) };
+
     if (!lexer) {
         throw std::runtime_error(
             std::string("loadInventor: unable to open file '") + std::string(path) + "'");
@@ -239,6 +247,7 @@ MeshData loadInventor(std::string_view path) {
 
     MeshData result;
 
+    // Only top-level Separators carry geometry; header and unknown tokens are skipped.
     int token = 0;
     while ((token = lexer.lex()) != EOF) {
         if (token == iv::kSeparator) {
@@ -246,7 +255,8 @@ MeshData loadInventor(std::string_view path) {
         }
     }
 
-    // Trust boundary: reject indices outside [0, positions.size()).
+    // Trust boundary: reject indices outside [0, positions.size()) so malformed input throws
+    // instead of reaching core.
     for (const int idx : result.indices) {
         if (idx < 0 || static_cast<std::size_t>(idx) >= result.positions.size()) {
             throw std::runtime_error("loadInventor: coordIndex " + std::to_string(idx) +
@@ -258,4 +268,4 @@ MeshData loadInventor(std::string_view path) {
     return result;
 }
 
-}  // namespace decimate
+} // namespace decimate

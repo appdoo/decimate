@@ -38,6 +38,7 @@ Thumbs.db
 # Session telemetry (hook-generated, local only)
 tasks/session-friction.log
 /build-verify/
+/build-nothreads/
 legacy/Debug/
 legacy/Release/
 /.cache/
@@ -71,3 +72,4 @@ diploma_tex/
 /tasks/
 /paper2026/
 /tex2026/
+/papers/

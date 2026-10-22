@@ -16,47 +16,58 @@
 #include <decimate/types/mesh_data.h>
 
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 
 using namespace decimate;
 
 namespace {
-MeshData loadSpot() { return loadObj(std::string(MESH_MODEL_DIR) + "/spot.obj"); }
 
-// 6x signed volume (sum of per-face tet determinants). Its SIGN encodes the
-// global winding/orientation — a flipped winding flips the sign. Orientation-
-// sensitive, unlike point-to-surface distance or index validity.
-double signedVolume6(const MeshData& m) {
-    double vol  = 0.0;
+/// The closed spot model used by all HE tests.
+MeshData loadSpot() {
+    return loadObj(std::string(MESH_MODEL_DIR) + "/spot.obj");
+}
+
+
+/// 6x signed volume (sum of per-face tet determinants). Its SIGN encodes the
+/// global winding/orientation: a flipped winding flips the sign. Orientation-
+/// sensitive, unlike point-to-surface distance or index validity.
+double signedVolume6(const MeshData &m) {
+    double    vol = 0.0;
     const int t = static_cast<int>(m.indices.size()) / 3;
     for (int i = 0; i < t; ++i) {
-        const auto& a = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3])];
-        const auto& b = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3 + 1])];
-        const auto& c = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3 + 2])];
+        const auto &a = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3])];
+        const auto &b = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3 + 1])];
+        const auto &c = m.positions[static_cast<std::size_t>(m.indices[static_cast<std::size_t>(i) * 3 + 2])];
         vol += static_cast<double>(a.dot(b.cross(c)));
     }
     return vol;
 }
-}  // namespace
+
+} // namespace
+
 
 TEST_CASE("HE1: spot.obj half-edge-collapses to a valid mesh", "[halfedge][integration]") {
     const MeshData in = loadSpot();
     REQUIRE(in.positions.size() > 100);
 
+    // A quarter of the vertices: enough collapses to hit the guard paths, few enough to stay valid.
     const int      target = static_cast<int>(in.positions.size()) / 4;
-    const MeshData out    = reduceHalfEdge(in, target);
+    const MeshData out = reduceHalfEdge(in, target);
 
     const int outV = static_cast<int>(out.positions.size());
     REQUIRE(outV > 0);
     REQUIRE(outV < static_cast<int>(in.positions.size()));
     REQUIRE(out.indices.size() < in.indices.size());
 
-    for (const auto& p : out.positions) {
+    // No NaN may leak out of the collapse placement.
+    for (const auto &p : out.positions) {
         REQUIRE(std::isfinite(p.x));
         REQUIRE(std::isfinite(p.y));
         REQUIRE(std::isfinite(p.z));
     }
+
+    // Every triangle references valid, distinct vertices.
     const int tris = static_cast<int>(out.indices.size()) / 3;
     for (int t = 0; t < tris; ++t) {
         const int a = out.indices[static_cast<std::size_t>(t) * 3];
@@ -67,8 +78,9 @@ TEST_CASE("HE1: spot.obj half-edge-collapses to a valid mesh", "[halfedge][integ
     }
 }
 
+
 TEST_CASE("HE2: reduceHalfEdge is deterministic", "[halfedge][integration]") {
-    const MeshData in     = loadSpot();
+    const MeshData in = loadSpot();
     const int      target = static_cast<int>(in.positions.size()) / 4;
 
     const MeshData a = reduceHalfEdge(in, target);
@@ -78,28 +90,31 @@ TEST_CASE("HE2: reduceHalfEdge is deterministic", "[halfedge][integration]") {
     REQUIRE(a.positions.size() == b.positions.size());
 }
 
-// HE3 — the HE-form guard catches the tetrahedron (link condition edge part):
-// every collapse is rejected, so the mesh is returned intact (no doubled face).
+
+/// HE3: the HE-form guard catches the tetrahedron (link condition edge part):
+/// every collapse is rejected, so the mesh is returned intact (no doubled face).
 TEST_CASE("HE3: a tetrahedron is left intact by the guard", "[halfedge][state]") {
+    // The smallest closed mesh: every edge has a third common neighbour, so no collapse is legal.
     MeshData m;
-    m.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-    m.indices   = {0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2};
+    m.positions = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+    m.indices = { 0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2 };
 
-    const MeshData out = reduceHalfEdge(m, 3);  // ask to remove a vertex
+    const MeshData out = reduceHalfEdge(m, 3); // ask to remove a vertex
 
-    REQUIRE(out.positions.size() == 4);   // every collapse guarded-out
+    REQUIRE(out.positions.size() == 4); // every collapse guarded-out
     REQUIRE(out.indices.size() == 12);
 }
 
-// HE4 — winding/orientation is preserved (the reconstruction must not flip
-// normals). Signed volume keeps its sign through reduction.
-TEST_CASE("HE4: reduceHalfEdge preserves winding (no normal flip)", "[halfedge][integration]") {
-    const MeshData in   = loadSpot();
-    const double   vIn  = signedVolume6(in);
-    REQUIRE(std::abs(vIn) > 1e-6);  // spot is a closed-ish solid -> nonzero
 
-    const MeshData out  = reduceHalfEdge(in, static_cast<int>(in.positions.size()) / 4);
+/// HE4: winding/orientation is preserved (the reconstruction must not flip
+/// normals). Signed volume keeps its sign through reduction.
+TEST_CASE("HE4: reduceHalfEdge preserves winding (no normal flip)", "[halfedge][integration]") {
+    const MeshData in = loadSpot();
+    const double   vIn = signedVolume6(in);
+    REQUIRE(std::abs(vIn) > 1e-6); // spot is a closed-ish solid -> nonzero
+
+    const MeshData out = reduceHalfEdge(in, static_cast<int>(in.positions.size()) / 4);
     const double   vOut = signedVolume6(out);
 
-    REQUIRE(vIn * vOut > 0.0);  // same sign -> winding preserved (a flip would negate it)
+    REQUIRE(vIn * vOut > 0.0); // same sign -> winding preserved (a flip would negate it)
 }

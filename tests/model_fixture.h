@@ -15,14 +15,14 @@
 #include <string>
 
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 
 /// @brief Absolute path of `MESH_MODEL_DIR/<name>`; SKIPs the running test case if the
 ///        file does not exist.  SKIP unwinds by exception, so this is safe to call from
 ///        helper functions reached from a TEST_CASE.
 /// @param name  File name relative to the model directory (e.g. "cow.obj").
-inline std::string modelOrSkip(const std::string& name) {
+inline std::string modelOrSkip(const std::string &name) {
     const std::string path = std::string(MESH_MODEL_DIR) + "/" + name;
     if (std::filesystem::exists(path)) {
         return path;
@@ -31,5 +31,5 @@ inline std::string modelOrSkip(const std::string& name) {
         SKIP("model/cow.obj is a local-only fixture (not redistributable)");
     }
     SKIP("model/" << name << " not present \xE2\x80\x94 run tools/fetch_models.sh");
-    return path;  // not reached: SKIP throws
+    return path; // not reached: SKIP throws
 }

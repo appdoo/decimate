@@ -6,7 +6,7 @@
 ///
 /// `QError` stores the fundamental error metric for one vertex as the upper
 /// triangle of a symmetric 4×4 matrix (10 doubles), exactly matching the
-/// legacy `decimate::QError` storage in `legacy/reduce/qerror.h`.
+/// legacy `decimate::QError` storage in `legacy2003/reduce/qerror.h`.
 ///
 /// The mathematics are the K_p matrix from the paper:
 ///
@@ -17,13 +17,13 @@
 ///
 /// ## Operator mapping (Beat-2a correctness)
 ///
-/// Legacy `Vec3` used non-standard operators that differ from `decimate::math::Vec3`:
+/// Legacy `Vec3` used non-standard operators that differ from `math::Vec3`:
 ///   - Legacy `a ^ b`          = cross product → modern `a.cross(b)`
 ///   - Legacy `a * b` (Vec3×Vec3) = dot product → modern `a.dot(b)`
 ///   - Legacy `a * scalar`     = scalar multiply → modern `a * scalar` (same)
 ///
-/// Both critical sites (`setPlane` and `optimize`) are ported with explicit
-/// `.cross()` and `.dot()` calls and a side-by-side note in the .cpp.
+/// `setPlane` is ported with explicit `.cross()` and `.dot()` calls and a side-by-side
+/// note in the .cpp; `optimize` is pure scalar arithmetic.
 
 #include <decimate/math/vec3.h>
 
@@ -52,13 +52,13 @@ public:
     /// Equivalent to `QError q; q.init(q1, q2);` — used by
     /// `QuadricErrorSystem::optimize` to form the combined edge quadric
     /// on the stack without touching the per-vertex storage.
-    QError(const QError& q1, const QError& q2) noexcept;
+    QError(const QError &q1, const QError &q2) noexcept;
 
     /// @brief Zero all coefficients.
     void init() noexcept;
 
     /// @brief Set to the element-wise sum of @p q1 and @p q2.
-    void init(const QError& q1, const QError& q2) noexcept;
+    void init(const QError &q1, const QError &q2) noexcept;
 
     /// @brief Set the quadric from the plane through three vertex positions.
     ///
@@ -69,15 +69,15 @@ public:
     /// @param p1  First  vertex position.
     /// @param p2  Second vertex position.
     /// @param p3  Third  vertex position.
-    void setPlane(const decimate::math::Vec3f& p1,
-                  const decimate::math::Vec3f& p2,
-                  const decimate::math::Vec3f& p3) noexcept;
+    void setPlane(const math::Vec3f &p1,
+                  const math::Vec3f &p2,
+                  const math::Vec3f &p3) noexcept;
 
     /// @brief Accumulate another quadric into this one (in-place addition).
     ///
     /// Used both during initialisation (each vertex gathers its incident
     /// face quadrics) and after a collapse (`QuadricErrorSystem::update`).
-    void add(const QError& other) noexcept;
+    void add(const QError &other) noexcept;
 
     /// @brief Evaluate the quadric error `pᵀ Q p` for point @p p.
     ///
@@ -85,20 +85,21 @@ public:
     /// face planes.  Always non-negative for a valid quadric.
     ///
     /// @param p  Query point.
-    [[nodiscard]] double getError(const decimate::math::Vec3f& p) const noexcept;
+    [[nodiscard]] double getError(const math::Vec3f &p) const noexcept;
 
     /// @brief Solve for the cost-minimising position by inverting the quadric.
     ///
-    /// Assembles the full 4×4 matrix, replaces the bottom row with
-    /// `[0 0 0 1]` (as per Garland-Heckbert §3), and calls `invertMatrixd`.
-    /// The optimal position is the last column of the inverse.
+    /// Solves `A·v = -b` for the quadric's upper-left 3×3 block `A` and
+    /// `b = (ad, bd, cd)` by the symmetric-cofactor (Cramer) rule — the same point
+    /// as inverting the 4×4 matrix with bottom row `[0 0 0 1]` (Garland-Heckbert §3),
+    /// at a fraction of the cost.
     ///
-    /// Falls back to `false` if the matrix is singular (caller must use
-    /// midpoint fallback — this is the Beat-2a behaviour, F4 is deferred).
+    /// Returns `false` if `|det A|` is below 1e-10 (singular); the caller must then
+    /// use its own fallback, e.g. the edge midpoint. `p` is left untouched on failure.
     ///
     /// @param[out] p  Receives the optimal position on success.
     /// @returns   `true` if the inverse exists; `false` if singular.
-    bool optimize(decimate::math::Vec3f& p) const noexcept;
+    bool optimize(math::Vec3f &p) const noexcept;
 
 private:
     // Upper triangle of the symmetric 4×4 error matrix.
@@ -115,4 +116,4 @@ private:
     double dd_ = 0.0;
 };
 
-}  // namespace decimate
+} // namespace decimate

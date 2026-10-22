@@ -1,7 +1,7 @@
 /**
  * decimate — appearance-preserving mesh simplification
  *
- * version 0.6
+ * version 0.7
  *
  * Copyright (C) 2003-2026 Andor Greißl (Greissl)
  * Report bugs and download new versions at https://github.com/appdoo/decimate
@@ -32,15 +32,15 @@
 /// point for the library version symbol (decimate::version), included as
 /// `#include <decimate.h>`.
 
-#define DECIMATE_VERSION_MAJOR 0
-#define DECIMATE_VERSION_MINOR 6
-#define DECIMATE_VERSION_STRING "0.6"
+#define DECIMATE_VERSION_MAJOR  0
+#define DECIMATE_VERSION_MINOR  7
+#define DECIMATE_VERSION_STRING "0.7"
 
 namespace decimate {
 /// @brief Library version as MAJOR*100 + MINOR. A real (linkable) symbol, so it
 ///        also serves as the smoke-test that the decimate archive linked.
 [[nodiscard]] int version() noexcept;
-}  // namespace decimate
+} // namespace decimate
 
 /*
  * MIT License

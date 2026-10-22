@@ -17,19 +17,19 @@ namespace decimate::bake {
 
 /// @brief 8-bit RGB colour with components in [0, 255].
 ///
-/// Range-encoded normals use the legacy formula:
+/// Range-encoded normals use the 2003 formula (legacy2003/split/texturesample.cpp:74-76):
 ///   r = (unsigned char)((normal.x + 1.0f) * 127.0f)
 /// so the neutral (flat surface facing the ray) encodes as (127, 127, 254)
 /// and the background / no-data sentinel is (128, 128, 128).
 struct Rgb {
-    std::uint8_t r{};
-    std::uint8_t g{};
-    std::uint8_t b{};
+    std::uint8_t r {};
+    std::uint8_t g {};
+    std::uint8_t b {};
 
-    [[nodiscard]] constexpr bool operator==(const Rgb& o) const noexcept {
+    [[nodiscard]] constexpr bool operator==(const Rgb &o) const noexcept {
         return r == o.r && g == o.g && b == o.b;
     }
-    [[nodiscard]] constexpr bool operator!=(const Rgb& o) const noexcept {
+    [[nodiscard]] constexpr bool operator!=(const Rgb &o) const noexcept {
         return !(*this == o);
     }
 };
@@ -37,16 +37,16 @@ struct Rgb {
 /// @brief Range-encoded normal map: width × height pixels in row-major order.
 ///
 /// The background sentinel (128, 128, 128) marks texels not covered by any
-/// low-poly face triangle.  `dilate()` fills those from their neighbours.
+/// low-poly face triangle.  The bake's `dilatePasses` fills those from their neighbours.
 ///
 /// ## Invariants
 ///
 /// - `pixels.size() == static_cast<size_t>(width) * height`.
 /// - All pixel values produced by `bake()` are in [0, 255] per channel.
 struct NormalMap {
-    int              width  = 0;
+    int              width = 0;
     int              height = 0;
-    std::vector<Rgb> pixels;  ///< Row-major; pixel (x,y) at pixels[y*width+x].
+    std::vector<Rgb> pixels; ///< Row-major; pixel (x,y) at pixels[y*width+x].
 };
 
-}  // namespace decimate::bake
+} // namespace decimate::bake

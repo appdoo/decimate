@@ -1,21 +1,22 @@
 // This file is part of the decimate library; see decimate.h for version/license details.
 #pragma once
 
-// mesh-toolkit — core raytracing functions
-// Ported from legacy/raytracing/ onto decimate::math::Vec3<float>.
-// Zero OS/graphics dependencies — pure C++20, Wasm-compilable.
+/// @file raytracing.h
+/// @brief Core ray/plane and ray/triangle kernels, ported from legacy2003/raytracing/ onto
+/// decimate::math::Vec3f. No OS or graphics dependencies; pure C++20, Wasm-compilable.
 
 #include <decimate/math/vec3.h>
 
 namespace rtrace {
 
-/// Epsilon for parallel-ray / degenerate-triangle tests.
-/// Preserved exactly from legacy/math/math3D.h (EPSILONF = 1e-8f).
+/// Epsilon for parallel-ray / degenerate-triangle tests. The 2003 name is EPSILONF
+/// (used at legacy2003/raytracing/raytracing.cpp:37).
+///
+/// Unverified against 2003: no text source in `legacy2003/` defines EPSILONF; the Visual Studio
+/// browse cache `legacy2003/polyreduction.ncb` lists `EPSILONF` next to `0.000001f` (1e-6f). 1e-8f
+/// is kept because the bake goldens are pinned on it.
 inline constexpr float kEpsilonF = 1e-8f;
 
-// ---------------------------------------------------------------------------
-// evaluate_t
-// ---------------------------------------------------------------------------
 /// Compute the ray/plane intersection parameter t.
 ///
 /// Solves:  t = -(d + N·O) / (N·D)
@@ -27,12 +28,10 @@ inline constexpr float kEpsilonF = 1e-8f;
 /// @param      dir    Ray direction D (need not be unit-length).
 /// @return true  if the ray intersects the plane (N·D not near zero).
 /// @return false if the ray is parallel to the plane.
-bool evaluate_t(float& t, const decimate::math::Vec3<float>& nrm, float d,
-                const decimate::math::Vec3<float>& origin, const decimate::math::Vec3<float>& dir);
+bool evaluate_t(float &t, const decimate::math::Vec3f &nrm, float d,
+                const decimate::math::Vec3f &origin, const decimate::math::Vec3f &dir);
 
-// ---------------------------------------------------------------------------
-// barycentricBadouel
-// ---------------------------------------------------------------------------
+
 /// Ray/polygon intersection via Didier Badouel's barycentric method.
 ///
 /// Reference: "An Efficient Ray/Polygon Intersection", Graphics Gems (1990).
@@ -45,12 +44,10 @@ bool evaluate_t(float& t, const decimate::math::Vec3<float>& nrm, float d,
 /// @param      p1     Triangle vertex 1 (float[3]).
 /// @param      p2     Triangle vertex 2 (float[3]).
 /// @return true if the point lies inside the triangle.
-bool barycentricBadouel(float& alpha, float& beta, const float* p, const float* nrm,
-                        const float* p0, const float* p1, const float* p2);
+bool barycentricBadouel(float &alpha, float &beta, const float *p, const float *nrm,
+                        const float *p0, const float *p1, const float *p2);
 
-// ---------------------------------------------------------------------------
-// intersect_triangle_bfc  (backface culling enabled)
-// ---------------------------------------------------------------------------
+
 /// Möller–Trumbore ray/triangle intersection — backface culling ON.
 ///
 /// Reference: "Fast, Minimum Storage Ray/Triangle Intersection",
@@ -69,13 +66,11 @@ bool barycentricBadouel(float& alpha, float& beta, const float* p, const float* 
 /// @param[out] u  Barycentric u coordinate.
 /// @param[out] v  Barycentric v coordinate.
 /// @return true if the ray hits the front face of the triangle.
-bool intersect_triangle_bfc(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir,
-                            decimate::math::Vec3<float>& v0, decimate::math::Vec3<float>& v1, decimate::math::Vec3<float>& v2,
-                            float* t, float* u, float* v);
+bool intersect_triangle_bfc(decimate::math::Vec3f &orig, decimate::math::Vec3f &dir,
+                            decimate::math::Vec3f &v0, decimate::math::Vec3f &v1, decimate::math::Vec3f &v2,
+                            float *t, float *u, float *v);
 
-// ---------------------------------------------------------------------------
-// intersect_triangle  (backface culling disabled)
-// ---------------------------------------------------------------------------
+
 /// Möller–Trumbore ray/triangle intersection — backface culling OFF.
 ///
 /// Same algorithm as intersect_triangle_bfc but handles both positive and
@@ -91,13 +86,11 @@ bool intersect_triangle_bfc(decimate::math::Vec3<float>& orig, decimate::math::V
 /// @param[out] u  Barycentric u coordinate.
 /// @param[out] v  Barycentric v coordinate.
 /// @return true if the ray hits the triangle (either face).
-bool intersect_triangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir, decimate::math::Vec3<float>& v0,
-                        decimate::math::Vec3<float>& v1, decimate::math::Vec3<float>& v2, float* t, float* u,
-                        float* v);
+bool intersect_triangle(decimate::math::Vec3f &orig, decimate::math::Vec3f &dir, decimate::math::Vec3f &v0,
+                        decimate::math::Vec3f &v1, decimate::math::Vec3f &v2, float *t, float *u,
+                        float *v);
 
-// ---------------------------------------------------------------------------
-// IntersectTriangle  (Drew's adaption from Real Time Rendering)
-// ---------------------------------------------------------------------------
+
 /// Alternative Möller–Trumbore variant attributed to Drew's adaptation from
 /// "Real Time Rendering", optimized against Möller's raytri.c.
 ///
@@ -116,8 +109,8 @@ bool intersect_triangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<
 /// @param[out] u  Barycentric u coordinate.
 /// @param[out] v  Barycentric v coordinate.
 /// @return true if the ray hits the triangle.
-bool IntersectTriangle(decimate::math::Vec3<float>& orig, decimate::math::Vec3<float>& dir, decimate::math::Vec3<float>& v1,
-                       decimate::math::Vec3<float>& v2, decimate::math::Vec3<float>& v3, float* t, float* u,
-                       float* v);
+bool IntersectTriangle(decimate::math::Vec3f &orig, decimate::math::Vec3f &dir, decimate::math::Vec3f &v1,
+                       decimate::math::Vec3f &v2, decimate::math::Vec3f &v3, float *t, float *u,
+                       float *v);
 
-}  // namespace rtrace
+} // namespace rtrace

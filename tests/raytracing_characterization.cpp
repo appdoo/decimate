@@ -23,98 +23,44 @@
 #include <string>
 #include <unordered_map>
 
-using V3 = decimate::math::Vec3<float>;
-
-static constexpr float kEps = 1e-6F;
-
-// ---------------------------------------------------------------------------
-// Bit-exact anchors (T1, T2, T3)
-// ---------------------------------------------------------------------------
-
-TEST_CASE("evaluate_t: axis-aligned plane/ray hit is exact", "[raytracing][T1]") {
-    // N=(0,0,1), d=0, O=(0,0,1), D=(0,0,-1)
-    // t = -(0 + 1) / (-1) = 1.0 exactly
-    V3 nrm{0.0F, 0.0F, 1.0F};
-    V3 origin{0.0F, 0.0F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    float t = 0.0F;
-
-    bool hit = rtrace::evaluate_t(t, nrm, 0.0F, origin, dir);
-
-    REQUIRE(hit == true);
-    REQUIRE(t == 1.0F);  // bit-exact: rational result representable in float
-}
-
-TEST_CASE("intersect_triangle: interior hit exact barycentric coordinates", "[raytracing][T2]") {
-    // orig=(0.25,0.25,1), dir=(0,0,-1), T=[v0(0,0,0),v1(1,0,0),v2(0,1,0)]
-    // Expected: hit=true, t=1.0, u=0.25, v=0.25  (exact in float)
-    V3 orig{0.25F, 0.25F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
-
-    REQUIRE(hit == true);
-    REQUIRE(t == 1.0F);
-    REQUIRE(u == 0.25F);
-    REQUIRE(v == 0.25F);
-}
-
-TEST_CASE("intersect_triangle: point outside triangle returns false", "[raytracing][T3]") {
-    // orig=(2,2,1), dir=(0,0,-1) — point (2,2,0) is outside the triangle
-    V3 orig{2.0F, 2.0F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
-
-    REQUIRE(hit == false);
-}
-
-// ---------------------------------------------------------------------------
-// Golden fixture helpers (T4)
-// ---------------------------------------------------------------------------
+using V3 = decimate::math::Vec3f;
 
 namespace {
 
+/// Relative tolerance for the golden comparison (booleans are compared exactly).
+constexpr float kEps = 1e-6f;
+
+
+/// One golden fixture line: the hit flag plus whichever of t/u/v/alpha/beta the function reports.
 struct GoldenRow {
-    int hit = 0;
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    float alpha = 0.0F;
-    float beta = 0.0F;
+    int   hit = 0;
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    float alpha = 0.0f;
+    float beta = 0.0f;
 };
 
-// Parse a golden fixture file into a key→row map.
-// Each line looks like:
-//   <key> hit=<0|1> [t=<float>] [u=<float>] [v=<float>] [alpha=<float>] [beta=<float>]
-std::unordered_map<std::string, GoldenRow> loadGolden(const std::string& path) {
+
+/// Parses a golden fixture file into a key→row map.  Throws if the file cannot be opened.
+/// Each line looks like:
+///   <key> hit=<0|1> [t=<float>] [u=<float>] [v=<float>] [alpha=<float>] [beta=<float>]
+std::unordered_map<std::string, GoldenRow> loadGolden(const std::string &path) {
     std::ifstream file(path);
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open golden fixture: " + path);
     }
     std::unordered_map<std::string, GoldenRow> rows;
-    std::string line;
+    std::string                                line;
     while (std::getline(file, line)) {
         if (line.empty()) {
             continue;
         }
         std::istringstream ss(line);
-        std::string key;
+        std::string        key;
         ss >> key;
 
-        GoldenRow row{};
+        GoldenRow   row {};
         std::string token;
         while (ss >> token) {
             auto eq = token.find('=');
@@ -142,11 +88,12 @@ std::unordered_map<std::string, GoldenRow> loadGolden(const std::string& path) {
     return rows;
 }
 
-// Resolve the golden fixture path relative to the source tree.
-// CTest sets CTEST_SOURCE_DIRECTORY; fall back to common relative paths.
+
+/// Resolves the golden fixture path relative to the source tree.
+/// CTest sets CTEST_SOURCE_DIRECTORY; fall back to common relative paths.
 std::string goldenPath() {
     // Check environment variable first (set by CTest or CI)
-    const char* srcDir = std::getenv("CTEST_SOURCE_DIRECTORY");
+    const char *srcDir = std::getenv("CTEST_SOURCE_DIRECTORY");
     if (srcDir != nullptr) {
         return std::string(srcDir) + "/tests/fixtures/raytracing_golden.txt";
     }
@@ -165,21 +112,73 @@ std::string goldenPath() {
     return "tests/fixtures/raytracing_golden.txt";
 }
 
-}  // namespace
+} // namespace
 
-// ---------------------------------------------------------------------------
-// Golden comparison tests (T4)
-// ---------------------------------------------------------------------------
 
+/// Bit-exact anchors (T1, T2, T3)
+TEST_CASE("evaluate_t: axis-aligned plane/ray hit is exact", "[raytracing][T1]") {
+    // N=(0,0,1), d=0, O=(0,0,1), D=(0,0,-1)
+    // t = -(0 + 1) / (-1) = 1.0 exactly
+    V3    nrm { 0.0f, 0.0f, 1.0f };
+    V3    origin { 0.0f, 0.0f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    float t = 0.0f;
+
+    bool hit = rtrace::evaluate_t(t, nrm, 0.0f, origin, dir);
+
+    REQUIRE(hit == true);
+    REQUIRE(t == 1.0f); // bit-exact: rational result representable in float
+}
+
+
+TEST_CASE("intersect_triangle: interior hit exact barycentric coordinates", "[raytracing][T2]") {
+    // orig=(0.25,0.25,1), dir=(0,0,-1), T=[v0(0,0,0),v1(1,0,0),v2(0,1,0)]
+    // Expected: hit=true, t=1.0, u=0.25, v=0.25  (exact in float)
+    V3    orig { 0.25f, 0.25f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+
+    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+
+    REQUIRE(hit == true);
+    REQUIRE(t == 1.0f);
+    REQUIRE(u == 0.25f);
+    REQUIRE(v == 0.25f);
+}
+
+
+TEST_CASE("intersect_triangle: point outside triangle returns false", "[raytracing][T3]") {
+    // orig=(2,2,1), dir=(0,0,-1) — point (2,2,0) is outside the triangle
+    V3    orig { 2.0f, 2.0f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+
+    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+
+    REQUIRE(hit == false);
+}
+
+
+/// Golden comparison tests (T4)
 TEST_CASE("raytracing golden: evaluate_t interior hit", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("evaluate_t");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("evaluate_t");
 
-    V3 nrm{0.0F, 0.0F, 1.0F};
-    V3 origin{0.0F, 0.0F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    float t = 0.0F;
-    bool hit = rtrace::evaluate_t(t, nrm, 0.0F, origin, dir);
+    V3    nrm { 0.0f, 0.0f, 1.0f };
+    V3    origin { 0.0f, 0.0f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    float t = 0.0f;
+    bool  hit = rtrace::evaluate_t(t, nrm, 0.0f, origin, dir);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     if (g.hit != 0) {
@@ -187,32 +186,34 @@ TEST_CASE("raytracing golden: evaluate_t interior hit", "[raytracing][T4][golden
     }
 }
 
-TEST_CASE("raytracing golden: evaluate_t parallel ray (no hit)", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("evaluate_t_parallel");
 
-    V3 nrm{0.0F, 0.0F, 1.0F};
-    V3 origin{0.0F, 0.0F, 1.0F};
-    V3 dir{1.0F, 0.0F, 0.0F};
-    float t = 0.0F;
-    bool hit = rtrace::evaluate_t(t, nrm, 0.0F, origin, dir);
+TEST_CASE("raytracing golden: evaluate_t parallel ray (no hit)", "[raytracing][T4][golden]") {
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("evaluate_t_parallel");
+
+    V3    nrm { 0.0f, 0.0f, 1.0f };
+    V3    origin { 0.0f, 0.0f, 1.0f };
+    V3    dir { 1.0f, 0.0f, 0.0f };
+    float t = 0.0f;
+    bool  hit = rtrace::evaluate_t(t, nrm, 0.0f, origin, dir);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
 }
 
-TEST_CASE("raytracing golden: intersect_triangle interior hit", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_interior");
 
-    V3 orig{0.25F, 0.25F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+TEST_CASE("raytracing golden: intersect_triangle interior hit", "[raytracing][T4][golden]") {
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_interior");
+
+    V3    orig { 0.25f, 0.25f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     REQUIRE(t == Catch::Approx(g.t).epsilon(kEps));
@@ -220,54 +221,57 @@ TEST_CASE("raytracing golden: intersect_triangle interior hit", "[raytracing][T4
     REQUIRE(v == Catch::Approx(g.v).epsilon(kEps));
 }
 
-TEST_CASE("raytracing golden: intersect_triangle outside miss", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_outside");
 
-    V3 orig{2.0F, 2.0F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+TEST_CASE("raytracing golden: intersect_triangle outside miss", "[raytracing][T4][golden]") {
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_outside");
+
+    V3    orig { 2.0f, 2.0f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
 }
+
 
 TEST_CASE("raytracing golden: intersect_triangle parallel ray", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_parallel");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_parallel");
 
-    V3 orig{0.25F, 0.25F, 1.0F};
-    V3 dir{1.0F, 0.0F, 0.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+    V3    orig { 0.25f, 0.25f, 1.0f };
+    V3    dir { 1.0f, 0.0f, 0.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
 }
+
 
 TEST_CASE("raytracing golden: intersect_triangle origin behind triangle",
           "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_behind");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_behind");
 
-    V3 orig{0.25F, 0.25F, -1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
+    V3    orig { 0.25f, 0.25f, -1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     if (g.hit != 0) {
@@ -277,57 +281,60 @@ TEST_CASE("raytracing golden: intersect_triangle origin behind triangle",
     }
 }
 
+
 TEST_CASE("raytracing golden: intersect_triangle_bfc backface is culled",
           "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_bfc_backface");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_bfc_backface");
 
-    V3 orig{0.25F, 0.25F, -1.0F};
-    V3 dir{0.0F, 0.0F, 1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle_bfc(orig, dir, v0, v1, v2, &t, &u, &v);
+    V3    orig { 0.25f, 0.25f, -1.0f };
+    V3    dir { 0.0f, 0.0f, 1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle_bfc(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
 }
+
 
 TEST_CASE("raytracing golden: intersect_triangle_bfc front face hit", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("intersect_triangle_bfc_front");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("intersect_triangle_bfc_front");
 
-    V3 orig{0.25F, 0.25F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::intersect_triangle_bfc(orig, dir, v0, v1, v2, &t, &u, &v);
+    V3    orig { 0.25f, 0.25f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::intersect_triangle_bfc(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     REQUIRE(t == Catch::Approx(g.t).epsilon(kEps));
     REQUIRE(u == Catch::Approx(g.u).epsilon(kEps));
     REQUIRE(v == Catch::Approx(g.v).epsilon(kEps));
 }
+
 
 TEST_CASE("raytracing golden: IntersectTriangle interior hit", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("IntersectTriangle_interior");
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("IntersectTriangle_interior");
 
-    V3 orig{0.25F, 0.25F, 1.0F};
-    V3 dir{0.0F, 0.0F, -1.0F};
-    V3 v0{0.0F, 0.0F, 0.0F};
-    V3 v1{1.0F, 0.0F, 0.0F};
-    V3 v2{0.0F, 1.0F, 0.0F};
-    float t = 0.0F;
-    float u = 0.0F;
-    float v = 0.0F;
-    bool hit = rtrace::IntersectTriangle(orig, dir, v0, v1, v2, &t, &u, &v);
+    V3    orig { 0.25f, 0.25f, 1.0f };
+    V3    dir { 0.0f, 0.0f, -1.0f };
+    V3    v0 { 0.0f, 0.0f, 0.0f };
+    V3    v1 { 1.0f, 0.0f, 0.0f };
+    V3    v2 { 0.0f, 1.0f, 0.0f };
+    float t = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    bool  hit = rtrace::IntersectTriangle(orig, dir, v0, v1, v2, &t, &u, &v);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     REQUIRE(t == Catch::Approx(g.t).epsilon(kEps));
@@ -335,36 +342,38 @@ TEST_CASE("raytracing golden: IntersectTriangle interior hit", "[raytracing][T4]
     REQUIRE(v == Catch::Approx(g.v).epsilon(kEps));
 }
 
-TEST_CASE("raytracing golden: barycentricBadouel interior", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("barycentricBadouelf_interior");
 
-    float p[3] = {0.25F, 0.25F, 0.0F};
-    float nrm[3] = {0.0F, 0.0F, 1.0F};
-    float pp0[3] = {0.0F, 0.0F, 0.0F};
-    float pp1[3] = {1.0F, 0.0F, 0.0F};
-    float pp2[3] = {0.0F, 1.0F, 0.0F};
-    float alpha = 0.0F;
-    float beta = 0.0F;
-    bool hit = rtrace::barycentricBadouel(alpha, beta, p, nrm, pp0, pp1, pp2);
+TEST_CASE("raytracing golden: barycentricBadouel interior", "[raytracing][T4][golden]") {
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("barycentricBadouelf_interior");
+
+    float p[3] = { 0.25f, 0.25f, 0.0f };
+    float nrm[3] = { 0.0f, 0.0f, 1.0f };
+    float pp0[3] = { 0.0f, 0.0f, 0.0f };
+    float pp1[3] = { 1.0f, 0.0f, 0.0f };
+    float pp2[3] = { 0.0f, 1.0f, 0.0f };
+    float alpha = 0.0f;
+    float beta = 0.0f;
+    bool  hit = rtrace::barycentricBadouel(alpha, beta, p, nrm, pp0, pp1, pp2);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
     REQUIRE(alpha == Catch::Approx(g.alpha).epsilon(kEps));
     REQUIRE(beta == Catch::Approx(g.beta).epsilon(kEps));
 }
 
-TEST_CASE("raytracing golden: barycentricBadouel outside miss", "[raytracing][T4][golden]") {
-    auto golden = loadGolden(goldenPath());
-    auto& g = golden.at("barycentricBadouelf_outside");
 
-    float p[3] = {2.0F, 0.0F, 0.0F};
-    float nrm[3] = {0.0F, 0.0F, 1.0F};
-    float pp0[3] = {0.0F, 0.0F, 0.0F};
-    float pp1[3] = {1.0F, 0.0F, 0.0F};
-    float pp2[3] = {0.0F, 1.0F, 0.0F};
-    float alpha = 0.0F;
-    float beta = 0.0F;
-    bool hit = rtrace::barycentricBadouel(alpha, beta, p, nrm, pp0, pp1, pp2);
+TEST_CASE("raytracing golden: barycentricBadouel outside miss", "[raytracing][T4][golden]") {
+    auto  golden = loadGolden(goldenPath());
+    auto &g = golden.at("barycentricBadouelf_outside");
+
+    float p[3] = { 2.0f, 0.0f, 0.0f };
+    float nrm[3] = { 0.0f, 0.0f, 1.0f };
+    float pp0[3] = { 0.0f, 0.0f, 0.0f };
+    float pp1[3] = { 1.0f, 0.0f, 0.0f };
+    float pp2[3] = { 0.0f, 1.0f, 0.0f };
+    float alpha = 0.0f;
+    float beta = 0.0f;
+    bool  hit = rtrace::barycentricBadouel(alpha, beta, p, nrm, pp0, pp1, pp2);
 
     REQUIRE(static_cast<int>(hit) == g.hit);
 }

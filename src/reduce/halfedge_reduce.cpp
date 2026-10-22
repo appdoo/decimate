@@ -21,20 +21,24 @@
 
 namespace decimate {
 
-using math::Vec3f;
 using corner::He8;
 using corner::HeIndex;
 using corner::kNoHE;
+using math::Vec3f;
 
 namespace {
 
+/// A canonical half-edge with its initial collapse cost, for the one-time sort.
 struct EdgeCost {
     double  err = 0.0;
-    HeIndex he  = 0;
+    HeIndex he = 0;
 };
 
-// One canonical half-edge per undirected edge, ordered by initial collapse cost.
-std::vector<HeIndex> buildEdgeOrder(const std::vector<He8>& he, const QuadricErrorSystem& es) {
+} // namespace
+
+
+/// One canonical half-edge per undirected edge, ordered by initial collapse cost.
+static std::vector<HeIndex> buildEdgeOrder(const std::vector<He8> &he, const QuadricErrorSystem &es) {
     const int             numHE = static_cast<int>(he.size());
     std::vector<EdgeCost> edges;
     edges.reserve(static_cast<std::size_t>(numHE));
@@ -42,51 +46,58 @@ std::vector<HeIndex> buildEdgeOrder(const std::vector<He8>& he, const QuadricErr
         const HeIndex h = static_cast<HeIndex>(i);
         const HeIndex s = he[h].sym;
         if (s != kNoHE && h > s) {
-            continue;
+            continue; // the twin is the canonical half-edge of this edge
         }
+
         double err = 0.0;
         Vec3f  p;
         es.optimize(static_cast<int>(corner::originOf(he, h)), static_cast<int>(corner::tipOf(he, h)),
                     s == kNoHE, err, p);
-        edges.push_back({err, h});
+        edges.push_back({ err, h });
     }
-    std::ranges::sort(edges, [](const EdgeCost& a, const EdgeCost& b) { return a.err < b.err; });
+
+    std::ranges::sort(edges, [](const EdgeCost &a, const EdgeCost &b) { return a.err < b.err; });
     std::vector<HeIndex> order;
     order.reserve(edges.size());
-    for (const EdgeCost& e : edges) {
+    for (const EdgeCost &e : edges) {
         order.push_back(e.he);
     }
     return order;
 }
 
-// One sweep: recompute optimum at visit, collapse if legal; compact `order` to
-// the still-live worklist (drop dead/collapsed, keep guarded-out for retry).
-bool sweep(std::vector<He8>& he, QuadricErrorSystem& es, std::vector<Vec3f>& pos,
-           std::vector<char>& deadFace, std::vector<char>& deadVert, int& numValid, int target,
-           std::vector<HeIndex>& order) {
+
+/// One sweep: recompute optimum at visit, collapse if legal; compact `order` to the still-live
+/// worklist (drop dead/collapsed, keep guarded-out for retry). Returns whether any edge collapsed.
+static bool sweep(std::vector<He8> &he, QuadricErrorSystem &es, std::vector<Vec3f> &pos,
+                  std::vector<char> &deadFace, std::vector<char> &deadVert, int &numValid, int target,
+                  std::vector<HeIndex> &order) {
     bool        progressed = false;
-    std::size_t w          = 0;
+    std::size_t w = 0;
     for (std::size_t r = 0; r < order.size(); ++r) {
         const HeIndex h = order[r];
         if (deadFace[h / 3u] != 0) {
-            continue;
+            continue; // its face is gone
         }
         if (numValid <= target) {
-            order[w++] = h;
+            order[w++] = h; // target reached mid-sweep: keep the rest untouched
             continue;
         }
+
         const HeIndex p2 = corner::tipOf(he, h);
         const HeIndex p1 = corner::originOf(he, h);
         if (p1 == p2 || deadVert[p1] != 0 || deadVert[p2] != 0) {
-            continue;
+            continue; // an endpoint was merged away by an earlier collapse
         }
+
+        // The optimum depends on quadrics that earlier collapses changed, so recompute at visit.
         double err = 0.0;
         Vec3f  p;
         es.optimize(static_cast<int>(p1), static_cast<int>(p2), he[h].sym == kNoHE, err, p);
         if (!corner::collapseLegal(he, pos, h, p1, p2, p)) {
-            order[w++] = h;  // guarded-out — retry
+            order[w++] = h; // guarded-out — retry
             continue;
         }
+
         corner::collapse(he, h, p1, deadFace);
         pos[p1] = p;
         es.update(static_cast<int>(p1), static_cast<int>(p2));
@@ -98,9 +109,11 @@ bool sweep(std::vector<He8>& he, QuadricErrorSystem& es, std::vector<Vec3f>& pos
     return progressed;
 }
 
-void collapseToTarget(std::vector<He8>& he, QuadricErrorSystem& es, std::vector<Vec3f>& pos,
-                      std::vector<char>& deadFace, std::vector<char>& deadVert, int& numValid,
-                      int target, std::vector<HeIndex> order) {
+
+/// Repeats sweeps until the vertex target is met or a sweep makes no progress.
+static void collapseToTarget(std::vector<He8> &he, QuadricErrorSystem &es, std::vector<Vec3f> &pos,
+                             std::vector<char> &deadFace, std::vector<char> &deadVert, int &numValid,
+                             int target, std::vector<HeIndex> order) {
     while (numValid > target && !order.empty()) {
         if (!sweep(he, es, pos, deadFace, deadVert, numValid, target, order)) {
             break;
@@ -108,27 +121,34 @@ void collapseToTarget(std::vector<He8>& he, QuadricErrorSystem& es, std::vector<
     }
 }
 
-}  // namespace
 
-MeshData reduceHalfEdge(const MeshData& input, int targetVertexCount) {
+MeshData reduceHalfEdge(const MeshData &input, int targetVertexCount) {
+    corner::requireValidIndices(input, "reduceHalfEdge");
+
     const int n = static_cast<int>(input.positions.size());
     if (n == 0 || targetVertexCount >= n) {
         return input;
     }
-    const int   numFaces = static_cast<int>(input.indices.size()) / 3;
-    const auto* faces    = reinterpret_cast<const Face*>(input.indices.data());
 
-    std::vector<He8>   he  = corner::build(input);  // 8-byte slab, hash-paired
+    const int numFaces = static_cast<int>(input.indices.size()) / 3;
+    // Face is three consecutive ints, so the flat index array is read as faces without a copy.
+    static_assert(sizeof(Face) == 3 * sizeof(int), "Face must be three packed ints");
+    const auto *faces = reinterpret_cast<const Face *>(input.indices.data());
+
+    std::vector<He8>   he = corner::build(input); // 8-byte slab, hash-paired
     std::vector<Vec3f> pos = input.positions;
     QuadricErrorSystem es;
     es.initialize(n, pos.data(), numFaces, faces);
 
+
+    // Tombstones. Vertices no face references (loader phantoms) start dead so they never count as live.
     std::vector<char> deadFace(static_cast<std::size_t>(numFaces), 0);
     std::vector<char> deadVert(static_cast<std::size_t>(n), 0);
     std::vector<char> referenced(static_cast<std::size_t>(n), 0);
     for (int idx : input.indices) {
         referenced[static_cast<std::size_t>(idx)] = 1;
     }
+
     int numValid = 0;
     for (int v = 0; v < n; ++v) {
         if (referenced[static_cast<std::size_t>(v)] == 0) {
@@ -138,9 +158,11 @@ MeshData reduceHalfEdge(const MeshData& input, int targetVertexCount) {
         }
     }
 
+
     std::vector<HeIndex> order = buildEdgeOrder(he, es);
     collapseToTarget(he, es, pos, deadFace, deadVert, numValid, targetVertexCount, std::move(order));
+
     return corner::reconstruct(he, pos, deadFace, deadVert, numFaces);
 }
 
-}  // namespace decimate
+} // namespace decimate

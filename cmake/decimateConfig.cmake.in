@@ -1,5 +1,11 @@
 @PACKAGE_INIT@
 
+# decimate::bake links Threads::Threads when built with DECIMATE_THREADS (parallel bake).
+include(CMakeFindDependencyMacro)
+if(@DECIMATE_THREADS@)
+    find_dependency(Threads)
+endif()
+
 # All decimate component targets (and pure-math) live in one exported targets file.
 include("${CMAKE_CURRENT_LIST_DIR}/decimateTargets.cmake")
 

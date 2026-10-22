@@ -1,224 +1,32 @@
-# mesh-toolkit clang-tidy configuration
-#
-# Rollout contract (Spec 03-04, see tasks/spec_map.md Notes):
-#   - Checks ride as WARNINGS globally.
-#   - ERRORS only on touched/new files — via scripts/clang-tidy-diff.sh.
-#   - Do NOT set CMAKE_CXX_CLANG_TIDY; that would hard-gate every compile.
-#   - Legacy code under legacy/ is not in the CMake build, so it is never
-#     linted by the build system at all.
-#
-# The four primary function-shape checks (from cpp-conventions):
-#   readability-function-size          — flat, small functions
-#   readability-function-cognitive-complexity — untangled logic
-#   readability-else-after-return      — guard-clause style
-#   readability-braces-around-statements — brace-all-the-things
-
----
-Checks: >
-  -*,
-  readability-braces-around-statements,
-  readability-else-after-return,
-  readability-function-cognitive-complexity,
-  readability-function-size,
-  readability-identifier-naming,
-  readability-inconsistent-declaration-parameter-name,
-  readability-misleading-indentation,
-  readability-misplaced-array-index,
-  readability-non-const-parameter,
-  readability-redundant-control-flow,
-  readability-redundant-declaration,
-  readability-redundant-member-init,
-  readability-redundant-smartptr-get,
-  readability-simplify-boolean-expr,
-  readability-static-definition-in-anonymous-namespace,
-  readability-string-compare,
-  readability-uniqueptr-delete-release,
-  modernize-avoid-bind,
-  modernize-avoid-c-arrays,
-  modernize-concat-nested-namespaces,
-  modernize-deprecated-headers,
-  modernize-loop-convert,
-  modernize-make-shared,
-  modernize-make-unique,
-  modernize-pass-by-value,
-  modernize-raw-string-literal,
-  modernize-redundant-void-arg,
-  modernize-replace-auto-ptr,
-  modernize-replace-disallow-copy-and-assign-macro,
-  modernize-replace-random-shuffle,
-  modernize-shrink-to-fit,
-  modernize-unary-static-assert,
-  modernize-use-bool-literals,
-  modernize-use-default-member-init,
-  modernize-use-emplace,
-  modernize-use-equals-default,
-  modernize-use-equals-delete,
-  modernize-use-nodiscard,
-  modernize-use-noexcept,
-  modernize-use-nullptr,
-  modernize-use-override,
-  modernize-use-ranges,
-  modernize-use-starts-ends-with,
-  modernize-use-std-format,
-  modernize-use-std-numbers,
-  modernize-use-std-print,
-  modernize-use-transparent-functors,
-  modernize-use-uncaught-exceptions,
-  modernize-use-using,
-  bugprone-argument-comment,
-  bugprone-assert-side-effect,
-  bugprone-assignment-in-if-condition,
-  bugprone-boolean-return-constant-conversion,
-  bugprone-branch-clone,
-  bugprone-copy-constructor-init,
-  bugprone-dangling-handle,
-  bugprone-dynamic-static-initializers,
-  bugprone-easily-swappable-parameters,
-  bugprone-empty-catch,
-  bugprone-exception-escape,
-  bugprone-fold-init-type,
-  bugprone-forward-declaration-namespace,
-  bugprone-forwarding-reference-overload,
-  bugprone-implicit-widening-of-multiplication-result,
-  bugprone-incorrect-roundings,
-  bugprone-infinite-loop,
-  bugprone-integer-division,
-  bugprone-lambda-function-name,
-  bugprone-macro-parentheses,
-  bugprone-macro-repeated-side-effects,
-  bugprone-misplaced-operator-in-strlen-in-alloc,
-  bugprone-misplaced-pointer-arithmetic-in-alloc,
-  bugprone-misplaced-widening-cast,
-  bugprone-move-forwarding-reference,
-  bugprone-multiple-statement-macro,
-  bugprone-narrowing-conversions,
-  bugprone-no-escape,
-  bugprone-not-null-terminated-result,
-  bugprone-parent-virtual-call,
-  bugprone-posix-return,
-  bugprone-reserved-identifier,
-  bugprone-shared-ptr-array-mismatch,
-  bugprone-signal-handler,
-  bugprone-signed-char-misuse,
-  bugprone-sizeof-container,
-  bugprone-sizeof-expression,
-  bugprone-spuriously-wake-up-functions,
-  bugprone-standalone-empty,
-  bugprone-string-constructor,
-  bugprone-string-integer-assignment,
-  bugprone-string-literal-with-embedded-nul,
-  bugprone-stringview-nullptr,
-  bugprone-suspicious-enum-usage,
-  bugprone-suspicious-include,
-  bugprone-suspicious-memory-comparison,
-  bugprone-suspicious-memset-usage,
-  bugprone-suspicious-missing-comma,
-  bugprone-suspicious-realloc-usage,
-  bugprone-suspicious-semicolon,
-  bugprone-suspicious-string-compare,
-  bugprone-swapped-arguments,
-  bugprone-terminating-continue,
-  bugprone-throw-keyword-missing,
-  bugprone-too-small-loop-variable,
-  bugprone-unchecked-optional-access,
-  bugprone-undefined-memory-manipulation,
-  bugprone-undelegated-constructor,
-  bugprone-unhandled-exception-at-new,
-  bugprone-unhandled-self-assignment,
-  bugprone-unused-raii,
-  bugprone-unused-return-value,
-  bugprone-use-after-move,
-  bugprone-virtual-near-miss,
-  portability-restrict-system-includes,
-  portability-simd-intrinsics,
-  portability-std-allocator-const,
-
-# Treat all enabled checks as warnings (the -warnings-as-errors flag is applied
-# selectively by scripts/clang-tidy-diff.sh on touched/new files only).
-WarningsAsErrors: ''
-
-# Header filter: only files under the project (not FetchContent deps, not system).
-# The regex matches relative paths as emitted by clang-tidy.
-HeaderFilterRegex: '^(core|libs|tests|ui)/'
-
-# Use the compile_commands.json from the build directory.
-# Run from the repo root or pass -p build/ explicitly.
-
+# id Software style (Doom 3 coding standard): names and method size.
+# Installed by /sdd:coding-style. Needs compile_commands.json to run.
+Checks: '-*,readability-identifier-naming,readability-function-size,cppcoreguidelines-narrowing-conversions'
 CheckOptions:
-  # readability-function-size thresholds (cpp-conventions)
-  # NestingThreshold 3 = flag at 3+ control-flow levels (depth-2 is the bar — the
-  # author's measured craft signature: 94% legacy / 99% ported / 100% hot-path
-  # ≤depth-2). A measured hot loop may keep depth-3 via an inline NOLINT + reason.
-  - key:   readability-function-size.NestingThreshold
-    value: '3'
-  - key:   readability-function-size.LineThreshold
-    value: '60'
-  - key:   readability-function-size.ParameterThreshold
-    value: '6'
-  - key:   readability-function-size.StatementThreshold
-    value: '50'
-  - key:   readability-function-size.BranchThreshold
-    value: '20'
-
-  # readability-function-cognitive-complexity threshold (cpp-conventions)
-  - key:   readability-function-cognitive-complexity.Threshold
-    value: '20'
-  - key:   readability-function-cognitive-complexity.DescribeBasicIncrements
-    value: 'false'
-
-  # readability-identifier-naming — PascalCase types, camelCase members/locals
-  - key:   readability-identifier-naming.ClassCase
-    value: CamelCase
-  - key:   readability-identifier-naming.StructCase
-    value: CamelCase
-  - key:   readability-identifier-naming.EnumCase
-    value: CamelCase
-  # Enum constants follow the constant convention: PascalCase for plain
-  # enumerators (e.g. Token::Int), or k-prefixed for constant-like token
-  # tables (e.g. iv::kPoint). Allow both by accepting an optional 'k' prefix.
-  - key:   readability-identifier-naming.EnumConstantCase
-    value: CamelCase
-  - key:   readability-identifier-naming.EnumConstantIgnoredRegexp
-    value: 'k[A-Z].*'
-  - key:   readability-identifier-naming.FunctionCase
-    value: camelBack
-  - key:   readability-identifier-naming.MethodCase
-    value: camelBack
-  - key:   readability-identifier-naming.MemberCase
-    value: camelBack
-  # Private/protected data members carry a trailing underscore (project
-  # convention used throughout src/; 03-04 set MemberCase but omitted this).
-  - key:   readability-identifier-naming.PrivateMemberCase
-    value: camelBack
-  - key:   readability-identifier-naming.PrivateMemberSuffix
-    value: '_'
-  - key:   readability-identifier-naming.ProtectedMemberCase
-    value: camelBack
-  - key:   readability-identifier-naming.ProtectedMemberSuffix
-    value: '_'
-  - key:   readability-identifier-naming.VariableCase
-    value: camelBack
-  - key:   readability-identifier-naming.ParameterCase
-    value: camelBack
-  - key:   readability-identifier-naming.GlobalConstantCase
-    value: CamelCase
-  - key:   readability-identifier-naming.GlobalConstantPrefix
-    value: 'k'
-  - key:   readability-identifier-naming.ConstexprVariableCase
-    value: CamelCase
-  - key:   readability-identifier-naming.ConstexprVariablePrefix
-    value: 'k'
-  - key:   readability-identifier-naming.StaticConstantCase
-    value: CamelCase
-  - key:   readability-identifier-naming.StaticConstantPrefix
-    value: 'k'
-
-  # portability-restrict-system-includes: allow everything (project is not safety-critical)
-  - key:   portability-restrict-system-includes.Includes
-    value: '*'
-
-  # easily-swappable-parameters: only flag 3+ adjacent same-type params.
-  # Two-param pairs like (row, col), (x, y), (width, height) are idiomatic for
-  # geometry/matrix APIs and unavoidable; the real swap hazard is 3+.
-  - key:   bugprone-easily-swappable-parameters.MinimumLength
-    value: '3'
+  # method bodies: one screen, three levels
+  readability-function-size.LineThreshold: 100
+  readability-function-size.NestingThreshold: 3
+  # naming: the project's existing convention (kept from the previous .clang-tidy), not the id lineage
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.EnumConstantIgnoredRegexp: 'k[A-Z].*'
+  readability-identifier-naming.FunctionCase: camelBack
+  readability-identifier-naming.MethodCase: camelBack
+  readability-identifier-naming.VariableCase: camelBack
+  readability-identifier-naming.MemberCase: camelBack
+  readability-identifier-naming.PrivateMemberCase: camelBack
+  readability-identifier-naming.PrivateMemberSuffix: '_'
+  readability-identifier-naming.ProtectedMemberCase: camelBack
+  readability-identifier-naming.ProtectedMemberSuffix: '_'
+  readability-identifier-naming.ParameterCase: camelBack
+  readability-identifier-naming.GlobalConstantCase: CamelCase
+  readability-identifier-naming.GlobalConstantPrefix: 'k'
+  # k-prefix only for NAMED constants (namespace, class or static scope). A local constexpr/const
+  # is a variable (x1 next to x2, x3 in a formula), so no ConstexprVariable rule.
+  readability-identifier-naming.ClassConstantCase: CamelCase
+  readability-identifier-naming.ClassConstantPrefix: 'k'
+  readability-identifier-naming.LocalConstantCase: camelBack
+  readability-identifier-naming.StaticConstantCase: CamelCase
+  readability-identifier-naming.StaticConstantPrefix: 'k'
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE

@@ -25,9 +25,7 @@
 ///   pointer-walk inlines in the legacy header.
 /// - `sym(h)` and `next(h)` return handles; `kNoHalfedge` is the boundary
 ///   sentinel (was `NULL` in legacy).
-/// - The construction *algorithm* is preserved exactly (Symmetric-search
-///   pairing, same iteration order) — only the representation changes.
-///   Beat-2b sort-based O(F log F) rebuild is explicitly deferred.
+/// - Twin (`sym`) pairing is done by hashing directed edges, O(F); see half_edge_mesh.cpp.
 ///
 /// ### Value semantics
 ///
@@ -35,6 +33,7 @@
 /// constructor / assignment do a deep copy of both vectors; independent
 /// storage is guaranteed (T9).
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -42,12 +41,9 @@
 
 namespace decimate {
 
-// ---------------------------------------------------------------------------
-// HeIndex — half-edge handle type
-// ---------------------------------------------------------------------------
-
 /// @brief Index handle for a half-edge.  Lightweight; pass by value.
 using HeIndex = std::uint32_t;
+
 
 /// @brief Sentinel value indicating "no half-edge" (boundary / unset).
 ///
@@ -55,9 +51,6 @@ using HeIndex = std::uint32_t;
 /// this value denotes a boundary edge or an uninitialized entry.
 inline constexpr HeIndex kNoHalfedge = 0xFFFFFFFFu;
 
-// ---------------------------------------------------------------------------
-// Halfedge — value object
-// ---------------------------------------------------------------------------
 
 /// @brief A single directed half-edge in the mesh.
 ///
@@ -74,15 +67,12 @@ inline constexpr HeIndex kNoHalfedge = 0xFFFFFFFFu;
 /// **Origin resolution:** the vertex at the *start* of half-edge `h` equals
 /// `end` of `next(next(h))` (the CCW predecessor in the triangle loop).
 struct Halfedge {
-    HeIndex       sym  = kNoHalfedge;  ///< Twin, or kNoHalfedge on boundary.
-    HeIndex       next = kNoHalfedge;  ///< Next in CCW face loop.
-    std::uint32_t face = 0;            ///< Owning face index.
-    std::uint32_t end  = 0;            ///< End-vertex index.
+    HeIndex       sym = kNoHalfedge;  ///< Twin, or kNoHalfedge on boundary.
+    HeIndex       next = kNoHalfedge; ///< Next in CCW face loop.
+    std::uint32_t face = 0;           ///< Owning face index.
+    std::uint32_t end = 0;            ///< End-vertex index.
 };
 
-// ---------------------------------------------------------------------------
-// HalfEdgeMesh
-// ---------------------------------------------------------------------------
 
 /// @brief Half-edge mesh — index-handle connectivity over value storage.
 ///
@@ -107,20 +97,17 @@ public:
     /// @brief Rule of Zero — compiler-generated copy/move/dtor are correct.
     ///
     /// Copy deep-copies both vectors; independent storage guaranteed (T9).
-    HalfEdgeMesh(const HalfEdgeMesh&)            = default;
-    HalfEdgeMesh& operator=(const HalfEdgeMesh&) = default;
-    HalfEdgeMesh(HalfEdgeMesh&&) noexcept            = default;
-    HalfEdgeMesh& operator=(HalfEdgeMesh&&) noexcept = default;
-    ~HalfEdgeMesh()                               = default;
-
-    // -----------------------------------------------------------------------
-    // Factory
-    // -----------------------------------------------------------------------
+    HalfEdgeMesh(const HalfEdgeMesh &) = default;
+    HalfEdgeMesh &operator=(const HalfEdgeMesh &) = default;
+    HalfEdgeMesh(HalfEdgeMesh &&) noexcept = default;
+    HalfEdgeMesh &operator=(HalfEdgeMesh &&) noexcept = default;
+    ~HalfEdgeMesh() = default;
 
     /// @brief Build the half-edge mesh from a flat face array.
     ///
-    /// Preserves the legacy `Symmetric`-search pairing algorithm exactly —
-    /// only the representation changes (pointer → index handle).
+    /// Twins are paired by hashing directed edges (a->b matches b->a), O(F).
+    /// On a non-manifold or inconsistently wound mesh the pairing is order-dependent and the
+    /// unpaired half-edges are left as boundary (`sym == kNoHalfedge`); nothing is reported.
     ///
     /// @param numPoints  Number of distinct vertex positions (used to size
     ///                   the internal connectivity scratchpad).
@@ -131,11 +118,7 @@ public:
     ///
     /// @pre  `faces` is non-null when `numFaces > 0`.
     /// @pre  Every vertex index in `faces` is in `[0, numPoints)`.
-    static HalfEdgeMesh create(int numPoints, int numFaces, const Face* faces);
-
-    // -----------------------------------------------------------------------
-    // Accessors — handle-based traversal API
-    // -----------------------------------------------------------------------
+    static HalfEdgeMesh create(int numPoints, int numFaces, const Face *faces);
 
     /// @brief Total number of half-edges (== 3 × faceCount).
     [[nodiscard]] std::uint32_t halfEdgeCount() const noexcept {
@@ -155,14 +138,16 @@ public:
     /// @brief Return the `Halfedge` value for handle `h`.
     ///
     /// @pre  `h < halfEdgeCount()`.
-    [[nodiscard]] const Halfedge& halfedge(HeIndex h) const noexcept {
+    [[nodiscard]] const Halfedge &halfedge(HeIndex h) const noexcept {
         return halfedges_[h];
     }
 
     /// @brief Return a mutable reference to the half-edge for handle `h`.
     ///
+    /// Editing `sym`/`next` can break the class invariants; the caller keeps them intact.
+    ///
     /// @pre  `h < halfEdgeCount()`.
-    [[nodiscard]] Halfedge& halfedge(HeIndex h) noexcept {
+    [[nodiscard]] Halfedge &halfedge(HeIndex h) noexcept {
         return halfedges_[h];
     }
 
@@ -177,10 +162,6 @@ public:
     [[nodiscard]] HeIndex next(HeIndex h) const noexcept {
         return halfedges_[h].next;
     }
-
-    // -----------------------------------------------------------------------
-    // Traversal helpers (mirror the legacy free functions)
-    // -----------------------------------------------------------------------
 
     /// @brief First outgoing half-edge from the *incoming* half-edge `h`.
     ///
@@ -215,12 +196,10 @@ public:
         return halfedges_[s].next;
     }
 
-    // -----------------------------------------------------------------------
-    // Boundary walk (index port of mudvis HalfEdgeMesh::firstBoundaryEdge /
-    // nextBoundaryEdge / boundaryPointIndices). The boundary is IMPLICIT — a
+    // Boundary walk: index port of mudvis HalfEdgeMesh::firstBoundaryEdge /
+    // nextBoundaryEdge / boundaryPointIndices. The boundary is IMPLICIT — a
     // half-edge with `sym == kNoHalfedge` is a boundary edge — so it is derived
     // by walking, not stored. Retires the need for a cached boundary set.
-    // -----------------------------------------------------------------------
 
     /// @brief First boundary half-edge (the first with `sym == kNoHalfedge`).
     /// @return Its handle, or `kNoHalfedge` if the mesh is closed (no boundary).
@@ -240,9 +219,15 @@ public:
     ///
     /// @param h A boundary half-edge (`sym(h) == kNoHalfedge`).
     /// @return The next boundary half-edge, or `kNoHalfedge` if none/degenerate.
+    ///
+    /// The rotation visits each half-edge at most once on a consistent mesh, so it is bounded by
+    /// `halfEdgeCount()` steps; a non-manifold fan whose twins form a cycle that never returns to
+    /// `h` is cut off there and yields `kNoHalfedge` instead of spinning.
     [[nodiscard]] HeIndex nextBoundaryEdge(HeIndex h) const noexcept {
         HeIndex n = halfedges_[h].next;
-        while (n != kNoHalfedge && n != h) {
+
+        // Rotate around the end vertex: next(sym(.)) steps to the next outgoing edge of the fan.
+        for (std::size_t steps = halfedges_.size(); steps > 0 && n != kNoHalfedge && n != h; --steps) {
             if (halfedges_[n].sym == kNoHalfedge) {
                 return n;
             }
@@ -261,10 +246,13 @@ public:
     /// that loop is the chart's outer boundary.
     [[nodiscard]] std::vector<std::uint32_t> boundaryPointIndices() const {
         std::vector<std::uint32_t> indices;
-        const HeIndex start = firstBoundaryEdge();
+        const HeIndex              start = firstBoundaryEdge();
+
+        // Closed mesh: no boundary to walk.
         if (start == kNoHalfedge) {
-            return indices;  // closed mesh — no boundary
+            return indices;
         }
+
         HeIndex h = start;
         do {
             indices.push_back(halfedges_[h].end);
@@ -277,18 +265,14 @@ public:
     ///
     /// Intended for downstream modules (reduce, parametrize) that iterate
     /// over all half-edges.  Prefer the accessor methods where possible.
-    [[nodiscard]] const std::vector<Halfedge>& halfedges() const noexcept {
+    [[nodiscard]] const std::vector<Halfedge> &halfedges() const noexcept {
         return halfedges_;
     }
 
 private:
-    std::vector<Halfedge> halfedges_;    ///< Flat value storage (3 × numFaces entries).
-    std::uint32_t         numFaces_  = 0;
+    std::vector<Halfedge> halfedges_; ///< Flat value storage (3 × numFaces entries).
+    std::uint32_t         numFaces_ = 0;
     std::uint32_t         numPoints_ = 0;
-
-    // -----------------------------------------------------------------------
-    // Construction helpers (matching legacy static helpers, representation-only change)
-    // -----------------------------------------------------------------------
 
     /// @brief Wire the three half-edges for face `faceIndex`.
     ///
@@ -296,7 +280,7 @@ private:
     /// - edge 0 (`ac`): end = faces[f].c, next = edge 1.
     /// - edge 1 (`cb`): end = faces[f].b, next = edge 2.
     /// - edge 2 (`ba`): end = faces[f].a, next = edge 0.
-    void writeFace(int faceIndex, const Face* faces);
+    void writeFace(int faceIndex, const Face *faces);
 };
 
-}  // namespace decimate
+} // namespace decimate

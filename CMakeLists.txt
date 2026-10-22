@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(decimate VERSION 0.6.0 LANGUAGES CXX)
+project(decimate VERSION 0.7.0 LANGUAGES CXX)
 
 # NOTE: the canonical build is left at the default optimization level, because the
 # exact-hash characterization goldens (LSCM UV hashes, stacktrace) drift under -O2
@@ -22,6 +22,12 @@ include(GNUInstallDirs)
 # Consumers (add_subdirectory / FetchContent of decimate) default these OFF, so they
 # don't build our tests/viewer or fetch Catch2. They are ON only for a top-level build.
 option(DECIMATE_BUILD_TESTS "Build decimate tests" ${PROJECT_IS_TOP_LEVEL})
+# Worker threads for the normal bake (std::thread only). OFF = identical code, one worker on the
+# caller's thread. Forced OFF for Emscripten without pthreads (-pthread in the flags) - Spec 22-01.
+option(DECIMATE_THREADS     "Parallel normal bake on std::thread (OFF: one worker, same code)" ON)
+if(EMSCRIPTEN AND NOT CMAKE_CXX_FLAGS MATCHES "pthread")
+    set(DECIMATE_THREADS OFF CACHE BOOL "Parallel normal bake on std::thread" FORCE)
+endif()
 option(MESH_BUILD_UI        "Build the GLFW interactive viewer (mesh-viewer)" ${PROJECT_IS_TOP_LEVEL})
 
 # Library subdirectories. diag is a host-only leaf; the decimate library itself

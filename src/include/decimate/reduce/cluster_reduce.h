@@ -41,6 +41,6 @@ namespace decimate {
 /// @param input             Source mesh (positions + indices).
 /// @param targetVertexCount Approximate desired vertex count.
 /// @returns                 Simplified `MeshData`.
-MeshData reduceClustering(const MeshData& input, int targetVertexCount);
+MeshData reduceClustering(const MeshData &input, int targetVertexCount);
 
-}  // namespace decimate
+} // namespace decimate

@@ -11,7 +11,7 @@
 /// Modernisation from legacy:
 ///   - `new QError[]` → `std::vector<QError>` (no naked new/delete).
 ///   - No `Destroy()` method — destructor is the destructor.
-///   - `Initialize` takes `const` pointers (callee does not mutate input data).
+///   - `initialize` takes `const` pointers (callee does not mutate input data).
 
 #include <decimate/reduce/qerror.h>
 
@@ -45,8 +45,8 @@ public:
     ///                   must span the reducer's use of this system).
     /// @param numFaces   Number of faces.
     /// @param faces      Face index array.
-    void initialize(int numPoints, const decimate::math::Vec3f* points,
-                    int numFaces, const Face* faces);
+    void initialize(int numPoints, const math::Vec3f *points,
+                    int numFaces, const Face *faces);
 
     /// @brief Notify of an edge collapse (p1 absorbs p2).
     ///
@@ -68,11 +68,11 @@ public:
     /// @param boundary  True if the edge is on the mesh boundary.
     /// @param[out] error  Quadric error at the chosen position.
     /// @param[out] p      Chosen position.
-    void optimize(int p1, int p2, bool boundary, double& error, decimate::math::Vec3f& p) const;
+    void optimize(int p1, int p2, bool boundary, double &error, math::Vec3f &p) const;
 
 private:
     std::vector<QError> errorMetrics_;
-    const decimate::math::Vec3f*  pointRef_ = nullptr;  ///< Non-owning; set by initialize.
+    const math::Vec3f  *pointRef_ = nullptr; ///< Non-owning; set by initialize.
 };
 
-}  // namespace decimate
+} // namespace decimate

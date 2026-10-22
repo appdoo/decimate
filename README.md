@@ -6,7 +6,7 @@ Reduce a mesh to a few hundred vertices, keep its look with a baked normal map.
 
 My diploma thesis from 2003, ported to C++20. Maybe it's useful to someone.
 
-![version](https://img.shields.io/badge/version-0.6-blue)
+![version](https://img.shields.io/badge/version-0.7-blue)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -18,10 +18,26 @@ My diploma thesis from 2003, ported to C++20. Maybe it's useful to someone.
 load        OBJ / Open Inventor
 reduce      QEM edge collapse
 chartify    curvature-driven region growing
-flatten     LSCM
+flatten     bijective, free boundary (Smith & Schaefer 2015); LSCM optional
 pack        rotated-horizon packing, mitered gutter
-bake        raytraced normals, seam-correct gutter fill
+bake        raytraced normals, seamless gutter (seam erasure, Liu et al. 2017)
 ```
+
+## Flattening
+
+![Spot's atlas, flattened bijectively](docs/images/atlas.png)
+
+Every chart is flattened with Smith & Schaefer's free-boundary method: it minimises the
+symmetric Dirichlet energy with a barrier that keeps the map bijective at every step — no
+flipped triangle, no boundary crossing itself, and the outline is free to take whatever
+shape distorts least. LSCM (`Flattener::Lscm`) is kept as the fast alternative.
+
+| Spot, 16 charts | max chart stretch L2 | L∞ |
+|---|---|---|
+| LSCM | 1.114 | 6.79 |
+| bijective | **1.011** | **1.79** |
+
+(Sander et al. 2001 stretch; 1 = isometric.)
 
 ## Chart borders
 
@@ -35,6 +51,14 @@ normals, clamped at sharp corners.
 matching texels.
 
 ![seam-correct fill vs plain dilation](docs/images/seamfill.png)
+
+**Seam erasure.** In object space the texels along every seam are solved so both sides of
+the seam interpolate to the same value (Liu et al. 2017, section 4): the seam mismatch drops
+from ~2.5e-3 to ~1e-10 per channel on Spot. Tangent space uses the seam-correct fill —
+erasure is not defined there (paper, footnote 3). `Gutter::Seamless`, the default, picks
+the right one per space.
+
+![plain dilation vs seam erased](docs/images/seamless.png)
 
 ## Simplification
 
@@ -53,8 +77,10 @@ No OpenGL, no OS, no globals in the core. Link only what you need:
 | `decimate::mesh` | half-edge mesh |
 | `decimate::io` | OBJ, Open Inventor |
 | `decimate::reduce` | `MeshData → MeshData` |
-| `decimate::chart` | segmentation, LSCM, packing |
+| `decimate::chart` | segmentation, bijective / LSCM flattening, packing |
 | `decimate::bake` | normal-map bake, object / tangent space |
+| `decimate::seam` | seam erasure, seam straightening, seam metric |
+| `decimate::pipeline` | `chartify` + `bakeAtlas`: the whole pipeline in two calls |
 | `decimate::raytracing` | ray / triangle |
 | `decimate::all` | everything |
 
@@ -77,7 +103,7 @@ build type CMake builds unoptimized.
 ## Use
 
 ```cmake
-find_package(decimate 0.6 REQUIRED COMPONENTS reduce)
+find_package(decimate 0.7 REQUIRED COMPONENTS reduce)
 target_link_libraries(myapp PRIVATE decimate::reduce)
 ```
 
@@ -85,6 +111,16 @@ target_link_libraries(myapp PRIVATE decimate::reduce)
 #include <decimate/reduce/reducer.h>
 
 decimate::MeshData low = decimate::reduce(high, 2000);   // target vertex count
+```
+
+The whole pipeline (`decimate::pipeline`):
+
+```cpp
+#include <decimate/pipeline.h>
+
+auto atlas = decimate::chartify(low);                    // charts, flattened and packed, UV per corner
+auto baked = decimate::bakeAtlas(atlas, high);           // normal map, seamless gutter
+// baked.map.pixels: RGB8, baked.map.width × baked.map.height; atlas.uv: 3 per face
 ```
 
 ## Models
@@ -106,7 +142,7 @@ Tests without their model are skipped. Details: `model/README.md`.
 - UVs: per corner (`3 × faceCount`); the per-vertex overload is lossy at seams.
 - Loaders throw `std::runtime_error` on out-of-range indices.
 
-`chart` and `bakeSeamFill` take a `HalfEdgeMesh`; 0.7 switches them to `MeshData`.
+`chart` and `bakeSeamFill` take a `HalfEdgeMesh`; `decimate::pipeline` takes `MeshData`.
 
 ## Known limitations
 
@@ -115,6 +151,18 @@ Tests without their model are skipped. Details: `model/README.md`.
 - OBJ: positions and faces only; `vt`/`vn` are misread as positions, `f a/b/c`
   keeps `a`, one object per file.
 - Windows and WebAssembly not built yet.
+
+## References
+
+- J. Smith, S. Schaefer. *Bijective Parameterization with Free Boundaries.* ACM Trans.
+  Graph. 34(4), SIGGRAPH 2015.
+- S. Liu, Z. Ferguson, A. Jacobson, Y. Gingold. *Seamless: Seam erasure and seam-aware
+  decoupling of shape from mesh resolution.* ACM Trans. Graph. 36(6), Article 216, 2017.
+- P. Sander, J. Snyder, S. Gortler, H. Hoppe. *Texture Mapping Progressive Meshes.*
+  SIGGRAPH 2001 (stretch metric).
+- M. Garland, P. Heckbert. *Surface Simplification Using Quadric Error Metrics.* SIGGRAPH 1997.
+- B. Lévy, S. Petitjean, N. Ray, J. Maillot. *Least Squares Conformal Maps for Automatic
+  Texture Atlas Generation.* SIGGRAPH 2002.
 
 ## License
 

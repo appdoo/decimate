@@ -21,9 +21,11 @@
 
 #include <catch2/catch_approx.hpp>
 #include "model_fixture.h"
+#include "sat_overlap.h"
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -37,7 +39,7 @@
 #include <decimate/chart/parametrize.h>
 
 #ifndef MESH_MODEL_DIR
-#  error "MESH_MODEL_DIR must be defined by CMake"
+#error "MESH_MODEL_DIR must be defined by CMake"
 #endif
 
 using namespace decimate;
@@ -45,27 +47,31 @@ using namespace decimate::chart;
 
 namespace {
 
-/// @brief Load a mesh and build the HalfEdgeMesh from it.
+/// A model file together with its half-edge mesh.
 struct LoadedMesh {
-    MeshData    data;
+    MeshData     data;
     HalfEdgeMesh hem;
     int          numFaces = 0;
 };
 
-LoadedMesh loadMesh(const std::string& path) {
+
+/// Loads @p path and builds its half-edge mesh in one step.
+LoadedMesh loadMesh(const std::string &path) {
     LoadedMesh lm;
-    lm.data     = load(path);
+    lm.data = load(path);
     lm.numFaces = static_cast<int>(lm.data.indices.size()) / 3;
     const int np = static_cast<int>(lm.data.positions.size());
     lm.hem = HalfEdgeMesh::create(np, lm.numFaces,
-                  reinterpret_cast<const Face*>(lm.data.indices.data()));
+                                  reinterpret_cast<const Face *>(lm.data.indices.data()));
     return lm;
 }
 
+
 /// @brief True if a UV is finite (neither NaN nor Inf).
-bool uvFinite(const decimate::math::Vec2<float>& uv) {
+bool uvFinite(const decimate::math::Vec2f &uv) {
     return std::isfinite(uv.x) && std::isfinite(uv.y);
 }
+
 
 /// @brief True if ANY of the three seed face corner UVs differs from {0,0}.
 ///
@@ -74,24 +80,118 @@ bool uvFinite(const decimate::math::Vec2<float>& uv) {
 /// written by the solve — it still has the default-constructed value.
 /// We check "not all zero" rather than "no corner is zero" to be robust to the
 /// case where the atlas origin coincidentally lands at one corner.
-bool seedCornersWritten(int seed, const std::vector<decimate::math::Vec2<float>>& cornerUV) {
+bool seedCornersWritten(int seed, const std::vector<decimate::math::Vec2f> &cornerUV) {
+    // Corners of face `seed` are cornerUV[3*seed .. 3*seed+2].
     for (int k = 0; k < 3; ++k) {
-        const auto& uv = cornerUV[static_cast<std::size_t>(3 * seed + k)];
+        const auto &uv = cornerUV[static_cast<std::size_t>(3 * seed + k)];
         if (uvFinite(uv) && (uv.x != 0.0f || uv.y != 0.0f)) {
-            return true;  // at least one corner was written away from origin
+            return true; // at least one corner was written away from origin
         }
     }
-    return false;  // all three corners are {0,0} or non-finite — seed was not written
+    return false; // all three corners are {0,0} or non-finite — seed was not written
 }
 
-}  // namespace
 
-// ===========================================================================
-// B1 [I] — horse.iv: full pipeline completes without exception; charts non-empty.
-//
-// This was crashing with std::out_of_range because the seed face's vertices
-// were missing from localOf (D1 defect — seed not in chart.faces).
-// ===========================================================================
+/// Axis-aligned UV box of one triangle, for pruning the exact SAT pair test.
+struct UvBox {
+    float x0, y0, x1, y1;
+};
+
+
+/// One chart's triangles as UV corner triples with their boxes.
+struct PackedTri {
+    std::array<decimate::math::Vec2f, 3> p;
+    UvBox                                box;
+};
+
+
+/// The packed triangles of one chart.
+std::vector<PackedTri> packedTriangles(const HalfEdgeChart &ac) {
+    std::vector<PackedTri> tris;
+    tris.reserve(ac.faces.size());
+    for (int i = 0; i < static_cast<int>(ac.faces.size()); ++i) {
+        PackedTri t;
+        for (int k = 0; k < 3; ++k) {
+            t.p[static_cast<std::size_t>(k)] = ac.uv[static_cast<std::size_t>(localCorner(ac, i, k))];
+        }
+        t.box = { std::min({ t.p[0].x, t.p[1].x, t.p[2].x }), std::min({ t.p[0].y, t.p[1].y, t.p[2].y }),
+                  std::max({ t.p[0].x, t.p[1].x, t.p[2].x }), std::max({ t.p[0].y, t.p[1].y, t.p[2].y }) };
+        tris.push_back(t);
+    }
+    return tris;
+}
+
+
+/// Number of chart-pair triangles whose interiors overlap by the exact SAT test (shared sat_overlap.h).
+///
+/// Boxes prune first, per chart and per triangle, so the exact test only runs on near neighbours.
+/// Triangles of the SAME chart are never compared: seams inside a chart touch by design.
+long crossChartOverlaps(const std::vector<HalfEdgeChart> &atlas) {
+    std::vector<std::vector<PackedTri>> tris;
+    std::vector<UvBox>                  chartBox;
+    for (const HalfEdgeChart &ac : atlas) {
+        tris.push_back(packedTriangles(ac));
+        UvBox b { 1e30f, 1e30f, -1e30f, -1e30f };
+        for (const PackedTri &t : tris.back()) {
+            b = { std::min(b.x0, t.box.x0), std::min(b.y0, t.box.y0), std::max(b.x1, t.box.x1),
+                  std::max(b.y1, t.box.y1) };
+        }
+        chartBox.push_back(b);
+    }
+
+    const auto apart = [](const UvBox &a, const UvBox &b) {
+        return a.x1 < b.x0 || b.x1 < a.x0 || a.y1 < b.y0 || b.y1 < a.y0;
+    };
+    long overlaps = 0;
+    for (std::size_t i = 0; i < tris.size(); ++i) {
+        for (std::size_t j = i + 1; j < tris.size(); ++j) {
+            if (apart(chartBox[i], chartBox[j])) {
+                continue;
+            }
+            for (const PackedTri &a : tris[i]) {
+                for (const PackedTri &b : tris[j]) {
+                    if (!apart(a.box, b.box) && trianglesOverlapSAT(a.p[0], a.p[1], a.p[2], b.p[0], b.p[1], b.p[2])) {
+                        ++overlaps;
+                    }
+                }
+            }
+        }
+    }
+    return overlaps;
+}
+
+
+/// Packs the final partition of @p cs and asserts the atlas is valid: in [0,1]^2 and with no
+/// two charts overlapping (exact SAT).  Shared by B1 and B2 so both pin the same contract.
+void requirePackedAtlasValid(const LoadedMesh &lm, const ChartSet &cs) {
+    // flattenCharts is the production flatten step (with the injectivity guard), as in AI1.
+    ChartSet                   final = cs;
+    std::vector<HalfEdgeChart> atlas = flattenCharts(lm.hem, lm.data, final);
+    REQUIRE_FALSE(atlas.empty());
+    REQUIRE_NOTHROW(packAtlas(atlas, lm.data, 256));
+
+    // Count out-of-range UVs instead of asserting per UV: one failure line, not 100k.
+    long uvCount = 0;
+    long badUv = 0;
+    for (const HalfEdgeChart &ac : atlas) {
+        for (const auto &uv : ac.uv) {
+            const bool ok = uvFinite(uv) && uv.x >= -1e-4f && uv.x <= 1.0f + 1e-4f && uv.y >= -1e-4f &&
+                            uv.y <= 1.0f + 1e-4f;
+            badUv += ok ? 0 : 1;
+            ++uvCount;
+        }
+    }
+    CHECK(badUv == 0);
+    REQUIRE(uvCount > 0);
+    CHECK(crossChartOverlaps(atlas) == 0);
+}
+
+} // namespace
+
+/// B1 [I] — horse.iv: full pipeline completes without exception; charts non-empty.
+///
+/// This was crashing with std::out_of_range because the seed face's vertices
+/// were missing from localOf (D1 defect — seed not in chart.faces).
 // NOLINTNEXTLINE(readability-function-size,readability-function-cognitive-complexity)
 TEST_CASE("B1: horse.iv — segment → parametrizeCorners → packAtlas, no exception",
           "[chart][iv][integration][B1]") {
@@ -106,15 +206,16 @@ TEST_CASE("B1: horse.iv — segment → parametrizeCorners → packAtlas, no exc
     REQUIRE_FALSE(cs.charts.empty());
     REQUIRE(static_cast<int>(cs.faceToChart.size()) == lm.numFaces);
 
-    std::vector<decimate::math::Vec2<float>> cornerUV;
+    std::vector<decimate::math::Vec2f> cornerUV;
     REQUIRE_NOTHROW(cornerUV = parametrizeCorners(lm.hem, lm.data, cs, 256));
 
     REQUIRE(static_cast<int>(cornerUV.size()) == lm.numFaces * 3);
+
+    // The test name promises packAtlas: run it on the final partition and assert a valid atlas.
+    requirePackedAtlasValid(lm, cs);
 }
 
-// ===========================================================================
-// B2 [I] — bunny.iv: same pipeline; exercises self-adjacent base-plate topology.
-// ===========================================================================
+/// B2 [I] — bunny.iv: same pipeline; exercises self-adjacent base-plate topology.
 TEST_CASE("B2: bunny.iv — segment → parametrizeCorners → packAtlas, no exception",
           "[chart][iv][integration][B2]") {
     const std::string path = modelOrSkip("bunny.iv");
@@ -127,37 +228,37 @@ TEST_CASE("B2: bunny.iv — segment → parametrizeCorners → packAtlas, no exc
     REQUIRE_NOTHROW(cs = segment(lm.hem, lm.data, 64));
     REQUIRE_FALSE(cs.charts.empty());
 
-    std::vector<decimate::math::Vec2<float>> cornerUV;
+    std::vector<decimate::math::Vec2f> cornerUV;
     REQUIRE_NOTHROW(cornerUV = parametrizeCorners(lm.hem, lm.data, cs, 256));
 
     REQUIRE(static_cast<int>(cornerUV.size()) == lm.numFaces * 3);
+
+    requirePackedAtlasValid(lm, cs);
 }
 
-// ===========================================================================
-// B3 [I] — horse.iv: every chart's seed face is present in ac.faces (structural
-//          membership) AND its three cornerUV slots are non-zero (written by LSCM).
-//
-// ## Why this test is falsifiable against pre-fix code
-//
-// Pre-fix: chart.faces did NOT contain the seed.  flatten() sets
-//   result.faces = chart.faces
-// so ac.faces also lacked the seed.  The assertion `seed ∈ ac.faces` therefore
-// FAILS on pre-fix code.  Post-fix: chart.faces includes the seed (08-03 Fix 1),
-// so ac.faces includes it and the assertion PASSES.
-//
-// The corner-UV check (seedCornersWritten) adds a value-level guard: the seed's
-// three cornerUV slots were {0,0} pre-fix (never written by the scatter loop
-// because the seed was absent from ac.faces).  Post-fix the scatter writes them,
-// and the LSCM solve places at least one vertex away from the origin.
-//
-// ## Why the old consistency approach was circular
-//
-// The previous test built a reference UV map from flatten(chart) independently
-// and compared cornerUV against it.  Under the pre-fix bug, flatten also missed
-// the seed → buildVertUVMap returned no entries for seed vertices → find() never
-// hit → the consistency branch was never taken → only uvFinite({0,0}) ran →
-// trivially true.  The test passed 100% against buggy code.
-// ===========================================================================
+/// B3 [I] — horse.iv: every chart's seed face is present in ac.faces (structural
+///          membership) AND its three cornerUV slots are non-zero (written by LSCM).
+///
+/// ## Why this test is falsifiable against pre-fix code
+///
+/// Pre-fix: chart.faces did NOT contain the seed.  flatten() sets
+///   result.faces = chart.faces
+/// so ac.faces also lacked the seed.  The assertion `seed ∈ ac.faces` therefore
+/// FAILS on pre-fix code.  Post-fix: chart.faces includes the seed (08-03 Fix 1),
+/// so ac.faces includes it and the assertion PASSES.
+///
+/// The corner-UV check (seedCornersWritten) adds a value-level guard: the seed's
+/// three cornerUV slots were {0,0} pre-fix (never written by the scatter loop
+/// because the seed was absent from ac.faces).  Post-fix the scatter writes them,
+/// and the LSCM solve places at least one vertex away from the origin.
+///
+/// ## Why the old consistency approach was circular
+///
+/// The previous test built a reference UV map from flatten(chart) independently
+/// and compared cornerUV against it.  Under the pre-fix bug, flatten also missed
+/// the seed → buildVertUVMap returned no entries for seed vertices → find() never
+/// hit → the consistency branch was never taken → only uvFinite({0,0}) ran →
+/// trivially true.  The test passed 100% against buggy code.
 // NOLINTNEXTLINE(readability-function-size,readability-function-cognitive-complexity)
 TEST_CASE("B3: horse.iv — seed face is in ac.faces and cornerUV slots are written",
           "[chart][iv][integration][B3]") {
@@ -170,38 +271,45 @@ TEST_CASE("B3: horse.iv — seed face is in ac.faces and cornerUV slots are writ
     ChartSet cs;
     REQUIRE_NOTHROW(cs = segment(lm.hem, lm.data, 64));
 
-    // Flatten each chart to get the HalfEdgeChart with its ac.faces list.
+    // Run the full cornerUV pipeline first: the injectivity guard (19-03) may split charts in cs.
+    std::vector<decimate::math::Vec2f> cornerUV;
+    REQUIRE_NOTHROW(cornerUV = parametrizeCorners(lm.hem, lm.data, cs, 256));
+    REQUIRE(static_cast<int>(cornerUV.size()) == lm.numFaces * 3);
+
+
+    // Then flatten the final partition to get the HalfEdgeChart with its ac.faces list.
     std::vector<HalfEdgeChart> atlasCharts;
     atlasCharts.reserve(cs.charts.size());
-    for (const Chart& chart : cs.charts) {
+    for (const Chart &chart : cs.charts) {
         atlasCharts.push_back(flatten(lm.hem, lm.data, chart));
     }
     packAtlas(atlasCharts, lm.data, 256);
 
-    // Also run the full cornerUV pipeline.
-    std::vector<decimate::math::Vec2<float>> cornerUV;
-    REQUIRE_NOTHROW(cornerUV = parametrizeCorners(lm.hem, lm.data, cs, 256));
-    REQUIRE(static_cast<int>(cornerUV.size()) == lm.numFaces * 3);
-
+    // Count violations over all charts so one failure reports how widespread it is.
     int seedsChecked = 0;
-    int seedNotInFaces = 0;      // structural: seed absent from ac.faces
-    int seedCornersNotWritten = 0;  // value: all three cornerUV are {0,0}
+    int seedNotInFaces = 0;        // structural: seed absent from ac.faces
+    int seedCornersNotWritten = 0; // value: all three cornerUV are {0,0}
 
     for (std::size_t ci = 0; ci < cs.charts.size(); ++ci) {
-        const Chart&      chart = cs.charts[ci];
-        const HalfEdgeChart& ac    = atlasCharts[ci];
+        const Chart         &chart = cs.charts[ci];
+        const HalfEdgeChart &ac = atlasCharts[ci];
 
         const int seed = chart.seed;
-        if (seed < 0 || seed >= lm.numFaces) { continue; }
+        if (seed < 0 || seed >= lm.numFaces) {
+            continue;
+        }
 
         // Structural check: seed must appear in ac.faces (fix at the producer).
-        const bool inFaces = std::find(ac.faces.begin(), ac.faces.end(), seed)
-                             != ac.faces.end();
-        if (!inFaces) { ++seedNotInFaces; }
+        const bool inFaces = std::find(ac.faces.begin(), ac.faces.end(), seed) != ac.faces.end();
+        if (!inFaces) {
+            ++seedNotInFaces;
+        }
 
         // Value check: at least one seed corner UV must be non-zero (written
         // by the LSCM scatter, not left at the default-constructed value).
-        if (!seedCornersWritten(seed, cornerUV)) { ++seedCornersNotWritten; }
+        if (!seedCornersWritten(seed, cornerUV)) {
+            ++seedCornersNotWritten;
+        }
 
         ++seedsChecked;
     }
@@ -215,58 +323,63 @@ TEST_CASE("B3: horse.iv — seed face is in ac.faces and cornerUV slots are writ
     CHECK(seedCornersNotWritten == 0);
 }
 
-// ===========================================================================
-// B4 [I] — cow.obj: same structural + value check as B3 on the cow.
-//
-// Regression guard: the D3 bug was SILENT on the cow (seeds are one dropped
-// triangle among ~232 per chart, not a crash trigger).  After the fix:
-//   - seed is in ac.faces (structural)
-//   - seed's cornerUV slots are non-zero (value)
-// See B3's comment block for why the structural check is falsifiable.
-// ===========================================================================
+/// B4 [I] — cow.obj: same structural + value check as B3 on the cow.
+///
+/// Regression guard: the D3 bug was SILENT on the cow (seeds are one dropped
+/// triangle among ~232 per chart, not a crash trigger).  After the fix:
+///   - seed is in ac.faces (structural)
+///   - seed's cornerUV slots are non-zero (value)
+/// See B3's comment block for why the structural check is falsifiable.
 TEST_CASE("B4: cow.obj — seed face is in ac.faces and cornerUV slots are written",
           "[chart][cow][integration][B4]") {
     const std::string path = modelOrSkip("cow.obj");
 
-    const MeshData data     = loadObj(path);
+    const MeshData data = loadObj(path);
     const int      numFaces = static_cast<int>(data.indices.size()) / 3;
     REQUIRE(numFaces > 0);
 
-    const int np = static_cast<int>(data.positions.size());
+    const int          np = static_cast<int>(data.positions.size());
     const HalfEdgeMesh hem = HalfEdgeMesh::create(np, numFaces,
-                                 reinterpret_cast<const Face*>(data.indices.data()));
+                                                  reinterpret_cast<const Face *>(data.indices.data()));
 
-    const ChartSet cs = segment(hem, data, 64);
+    ChartSet cs = segment(hem, data, 64);
     REQUIRE_FALSE(cs.charts.empty());
 
-    // Flatten each chart to get ac.faces for the structural check.
+    // Parametrize first: the guard may split charts in cs.
+    const std::vector<decimate::math::Vec2f> cornerUV =
+        parametrizeCorners(hem, data, cs, 256);
+    REQUIRE(static_cast<int>(cornerUV.size()) == numFaces * 3);
+
+    // After the guarded parametrizeCorners (19-03 may split charts in cs), flatten the final partition to get ac.faces for the structural check.
     std::vector<HalfEdgeChart> atlasCharts;
     atlasCharts.reserve(cs.charts.size());
-    for (const Chart& chart : cs.charts) {
+    for (const Chart &chart : cs.charts) {
         atlasCharts.push_back(flatten(hem, data, chart));
     }
     packAtlas(atlasCharts, data, 256);
 
-    const std::vector<decimate::math::Vec2<float>> cornerUV =
-        parametrizeCorners(hem, data, cs, 256);
-    REQUIRE(static_cast<int>(cornerUV.size()) == numFaces * 3);
-
+    // Same two counters as B3.
     int seedsChecked = 0;
     int seedNotInFaces = 0;
     int seedCornersNotWritten = 0;
 
     for (std::size_t ci = 0; ci < cs.charts.size(); ++ci) {
-        const Chart&      chart = cs.charts[ci];
-        const HalfEdgeChart& ac    = atlasCharts[ci];
+        const Chart         &chart = cs.charts[ci];
+        const HalfEdgeChart &ac = atlasCharts[ci];
 
         const int seed = chart.seed;
-        if (seed < 0 || seed >= numFaces) { continue; }
+        if (seed < 0 || seed >= numFaces) {
+            continue;
+        }
 
-        const bool inFaces = std::find(ac.faces.begin(), ac.faces.end(), seed)
-                             != ac.faces.end();
-        if (!inFaces) { ++seedNotInFaces; }
+        const bool inFaces = std::find(ac.faces.begin(), ac.faces.end(), seed) != ac.faces.end();
+        if (!inFaces) {
+            ++seedNotInFaces;
+        }
 
-        if (!seedCornersWritten(seed, cornerUV)) { ++seedCornersNotWritten; }
+        if (!seedCornersWritten(seed, cornerUV)) {
+            ++seedCornersNotWritten;
+        }
 
         ++seedsChecked;
     }
@@ -276,25 +389,24 @@ TEST_CASE("B4: cow.obj — seed face is in ac.faces and cornerUV slots are writt
     CHECK(seedCornersNotWritten == 0);
 }
 
-// ===========================================================================
-// S1 [S] — After segment, every chart.faces contains chart.seed exactly once.
-//
-// This confirms the single-source fix (D1+D3): seed in chart.faces at the
-// producer, not special-cased per consumer.  faceToChart[seed] == chart.id
-// was already correct pre-fix and must still hold.
-// ===========================================================================
+/// S1 [S] — After segment, every chart.faces contains chart.seed exactly once.
+///
+/// This confirms the single-source fix (D1+D3): seed in chart.faces at the
+/// producer, not special-cased per consumer.  faceToChart[seed] == chart.id
+/// was already correct pre-fix and must still hold.
 TEST_CASE("S1: after segment, every chart.faces contains chart.seed exactly once",
           "[chart][S1]") {
-    // Test on both a small synthetic mesh and the cow.
-    const std::string cowPath = modelOrSkip("cow.obj");
-    const MeshData    data    = loadObj(cowPath);
-    const int         nf      = static_cast<int>(data.indices.size()) / 3;
-    const int         np      = static_cast<int>(data.positions.size());
-    const HalfEdgeMesh hem    = HalfEdgeMesh::create(np, nf,
-                                    reinterpret_cast<const Face*>(data.indices.data()));
-    const ChartSet cs = segment(hem, data, 64);
+    // The cow stands in for a real mesh; no synthetic fixture is needed for the invariant.
+    const std::string  cowPath = modelOrSkip("cow.obj");
+    const MeshData     data = loadObj(cowPath);
+    const int          nf = static_cast<int>(data.indices.size()) / 3;
+    const int          np = static_cast<int>(data.positions.size());
+    const HalfEdgeMesh hem = HalfEdgeMesh::create(np, nf,
+                                                  reinterpret_cast<const Face *>(data.indices.data()));
+    const ChartSet     cs = segment(hem, data, 64);
 
-    for (const Chart& chart : cs.charts) {
+    // Walk every chart: the seed is a valid face, listed once, and still mapped back to its chart.
+    for (const Chart &chart : cs.charts) {
         const int seed = chart.seed;
         REQUIRE(seed >= 0);
         REQUIRE(seed < nf);
@@ -310,19 +422,17 @@ TEST_CASE("S1: after segment, every chart.faces contains chart.seed exactly once
     }
 }
 
-// ===========================================================================
-// S5 [S] — The iteration bound is kMaxIterFactor * maxCharts (D2 guard).
-//
-// The test binds to the kMaxIterFactor symbol exported from chart.h so that
-// reverting the segmenter to numFaces_ * maxCharts_ would not leave this test
-// green — the constant would have to change too, which is a separate, visible
-// code change.  A test that only checked `expectedCap == 640` (computed locally)
-// could not detect a reversion to the old formula.
-//
-// kMaxIterFactor is declared in chart.h (decimate::chart namespace):
-//   inline constexpr int kMaxIterFactor = 10;
-// The segmenter uses: maxIter = std::max(kMaxIterFactor * maxCharts_, 64)
-// ===========================================================================
+/// S5 [S] — The iteration bound is kMaxIterFactor * maxCharts (D2 guard).
+///
+/// The test binds to the kMaxIterFactor symbol exported from chart.h so that
+/// reverting the segmenter to numFaces_ * maxCharts_ would not leave this test
+/// green — the constant would have to change too, which is a separate, visible
+/// code change.  A test that only checked `expectedCap == 640` (computed locally)
+/// could not detect a reversion to the old formula.
+///
+/// kMaxIterFactor is declared in chart.h (decimate::chart namespace):
+///   inline constexpr int kMaxIterFactor = 10;
+/// The segmenter uses: maxIter = std::max(kMaxIterFactor * maxCharts_, 64)
 TEST_CASE("S5: iteration bound is O(maxCharts), not O(numFaces * maxCharts)",
           "[chart][S5]") {
     constexpr int maxCharts = 64;
@@ -336,16 +446,32 @@ TEST_CASE("S5: iteration bound is O(maxCharts), not O(numFaces * maxCharts)",
     // We assert the cap is ≤ 1000, which is well below any face-count-scaled value
     // for a real mesh but above the convergence range (≈ O(charts) ≈ 25 passes).
     CHECK(actualCap <= 1000);
-    CHECK(kMaxIterFactor >= 2);   // must be a meaningful multiplier, not 0 or 1
+    CHECK(kMaxIterFactor >= 2); // must be a meaningful multiplier, not 0 or 1
+
+    // The checks above read the constant only.  The segmenter's iteration count is not observable
+    // through the public API, so the bound actually used is asserted through its effect: segment()
+    // on the cow returns, partitions every face, and makes real progress.  Each pass of the driver
+    // loop adds at most one chart, so a cap that truncated the loop early (a revert, or a
+    // mis-sized bound) would leave far fewer than the 61 charts a converged run produces (S6).
+    const MeshData     data = loadObj(modelOrSkip("cow.obj"));
+    const int          nf = static_cast<int>(data.indices.size()) / 3;
+    const HalfEdgeMesh hem = HalfEdgeMesh::create(static_cast<int>(data.positions.size()), nf,
+                                                  reinterpret_cast<const Face *>(data.indices.data()));
+    const ChartSet     cs = segment(hem, data, maxCharts);
+
+    REQUIRE(static_cast<int>(cs.faceToChart.size()) == nf);
+    CHECK(static_cast<int>(cs.charts.size()) <= maxCharts);
+    CHECK(static_cast<int>(cs.charts.size()) > actualCap / 20); // 61 observed vs 32: cap not truncating
 }
 
-// S5b — the cap is not so small that it truncates legitimate convergence on a
-// real mesh. Split from S5 so the model-free checks above never report Skipped.
+/// S5b: the cap is not so small that it truncates legitimate convergence on a real mesh.
+/// Split from S5 so the model-free checks above never report Skipped.
 TEST_CASE("S5b: iteration cap still converges on horse.iv", "[chart][S5]") {
-    constexpr int maxCharts = 64;
+    constexpr int     maxCharts = 64;
     const std::string path = modelOrSkip("horse.iv");
-    LoadedMesh lm;
+    LoadedMesh        lm;
     REQUIRE_NOTHROW(lm = loadMesh(path));
+
     ChartSet cs;
     REQUIRE_NOTHROW(cs = segment(lm.hem, lm.data, maxCharts));
     REQUIRE_FALSE(cs.charts.empty());
@@ -353,39 +479,37 @@ TEST_CASE("S5b: iteration cap still converges on horse.iv", "[chart][S5]") {
     CHECK(static_cast<int>(cs.charts.size()) <= maxCharts);
 }
 
-// ===========================================================================
-// S6 [S] — cow.obj chart count / faceToChart partition unchanged by 08-03.
-//
-// Strengthened from the original "size() <= 64" upper-bound to:
-//   (a) Exact chart count — pinned to the deterministic value the algorithm
-//       produces (run once, read the value, hard-code with a comment).
-//   (b) Determinism — run segment twice on the same input and assert the two
-//       faceToChart vectors are element-wise equal.
-//   (c) Seed membership — every chart.faces includes its seed (the ONLY
-//       structural change from pre-08-03 behavior, per AC6 / spec §Invariants).
-//
-// The exact chart count below was determined by running the fixed segmenter
-// on cow.obj with maxCharts=64.  If the algorithm ever changes this count,
-// the test will catch it immediately.
-// ===========================================================================
+/// S6 [S] — cow.obj chart count / faceToChart partition unchanged by 08-03.
+///
+/// Strengthened from the original "size() <= 64" upper-bound to:
+///   (a) Exact chart count — pinned to the deterministic value the algorithm
+///       produces (run once, read the value, hard-code with a comment).
+///   (b) Determinism — run segment twice on the same input and assert the two
+///       faceToChart vectors are element-wise equal.
+///   (c) Seed membership — every chart.faces includes its seed (the ONLY
+///       structural change from pre-08-03 behavior, per AC6 / spec §Invariants).
+///
+/// The exact chart count below was determined by running the fixed segmenter
+/// on cow.obj with maxCharts=64.  If the algorithm ever changes this count,
+/// the test will catch it immediately.
 TEST_CASE("S6: cow.obj segment — same partition, seeds now in chart.faces",
           "[chart][cow][S6]") {
-    const std::string path = modelOrSkip("cow.obj");
-    const MeshData    data = loadObj(path);
-    const int         nf   = static_cast<int>(data.indices.size()) / 3;
-    const int         np   = static_cast<int>(data.positions.size());
+    const std::string  path = modelOrSkip("cow.obj");
+    const MeshData     data = loadObj(path);
+    const int          nf = static_cast<int>(data.indices.size()) / 3;
+    const int          np = static_cast<int>(data.positions.size());
     const HalfEdgeMesh hem = HalfEdgeMesh::create(np, nf,
-                                 reinterpret_cast<const Face*>(data.indices.data()));
+                                                  reinterpret_cast<const Face *>(data.indices.data()));
 
     // (a) Run once and verify exact chart count.
-    // Expected value: 25 (determined empirically from the fixed segmenter on
-    // cow.obj / maxCharts=64 — the cow has ~5856 faces; the region-growing
-    // convergence naturally yields 25 charts for this mesh/quota combination).
+    // Expected value: 61, re-pinned by Spec 19-01 (was 25).  Measured in the default
+    // CentroidMode::TrueCentroid; Legacy2003Middle also gives 61 (chart_legacy_golden).  The 25 was
+    // a port accident: a newborn chart's seed entered seedHistory, so Lloyd "converged" at once
+    // and the maxCharts cap never bound (2003: legacy2003/chartification/cchart.cpp:23-31).
     const ChartSet cs1 = segment(hem, data, 64);
     REQUIRE_FALSE(cs1.charts.empty());
-    // Exact count — pinned to the deterministic value (25 charts for cow/64).
-    // If this fails, the partition logic changed beyond the seed-face addition.
-    CHECK(static_cast<int>(cs1.charts.size()) == 25);
+    // Exact count - pinned to the deterministic value (61 charts for cow/64).
+    CHECK(static_cast<int>(cs1.charts.size()) == 61);
 
     // (b) Determinism: run segment again on the same input.
     const ChartSet cs2 = segment(hem, data, 64);
@@ -399,39 +523,37 @@ TEST_CASE("S6: cow.obj segment — same partition, seeds now in chart.faces",
         CHECK(id >= 0);
         CHECK(id < static_cast<int>(cs1.charts.size()));
     }
-    for (const Chart& chart : cs1.charts) {
+    for (const Chart &chart : cs1.charts) {
         const int seed = chart.seed;
         CHECK(std::count(chart.faces.begin(), chart.faces.end(), seed) == 1);
     }
 }
 
-// ===========================================================================
-// S4 [S] — Empty-after-pruning chart is skipped by flattener (no crash).
-//
-// After Fix 1, a chart with only a seed face (clusterCount = 0) would be
-// removed by removeInvalidCharts before it reaches flatten.  We test the
-// guard by confirming that an artificially minimal chart does not crash.
-//
-// We test indirectly: the cow pipeline produces some small charts that might
-// have clusterCount == 1 after the final expandCharts; these must not crash
-// parametrizeCorners.  The B1/B2 tests above already cover the crash guard
-// on .iv models; this test confirms the flatten early-return guard path on
-// the cow (the only mesh where small charts were previously a concern).
-// ===========================================================================
+/// S4 [S] — Empty-after-pruning chart is skipped by flattener (no crash).
+///
+/// After Fix 1, a chart with only a seed face (clusterCount = 0) would be
+/// removed by removeInvalidCharts before it reaches flatten.  We test the
+/// guard by confirming that an artificially minimal chart does not crash.
+///
+/// We test indirectly: the cow pipeline produces some small charts that might
+/// have clusterCount == 1 after the final expandCharts; these must not crash
+/// parametrizeCorners.  The B1/B2 tests above already cover the crash guard
+/// on .iv models; this test confirms the flatten early-return guard path on
+/// the cow (the only mesh where small charts were previously a concern).
 TEST_CASE("S4: empty-or-singular charts are skipped by flattener, no crash",
           "[chart][S4]") {
     // If flatten's chart.faces.empty() guard works, the whole pipeline
     // completes without exception even for degenerate charts.  This is already
     // exercised by B1 and B2; we include a cow-specific variant here to make
     // the guard explicit for the AC5 acceptance criterion.
-    const std::string path = modelOrSkip("cow.obj");
-    const MeshData    data = loadObj(path);
-    const int         nf   = static_cast<int>(data.indices.size()) / 3;
-    const int         np   = static_cast<int>(data.positions.size());
+    const std::string  path = modelOrSkip("cow.obj");
+    const MeshData     data = loadObj(path);
+    const int          nf = static_cast<int>(data.indices.size()) / 3;
+    const int          np = static_cast<int>(data.positions.size());
     const HalfEdgeMesh hem = HalfEdgeMesh::create(np, nf,
-                                 reinterpret_cast<const Face*>(data.indices.data()));
+                                                  reinterpret_cast<const Face *>(data.indices.data()));
 
-    const ChartSet cs = segment(hem, data, 64);
+    ChartSet cs = segment(hem, data, 64);
 
     // parametrizeCorners must complete without exception for every chart,
     // including any that are minimal (seed only after pruning would be removed,
