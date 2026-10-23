@@ -5,8 +5,9 @@ Reduce a mesh to a few hundred vertices, keep its look with a baked normal map.
 ![250 and 1 000 vertices, with and without the baked normal map](docs/images/hero.jpg)
 
 My diploma thesis from 2003, ported to C++20. Maybe it's useful to someone.
+The core also compiles to WebAssembly: a [web tool](#web-tool) runs the whole pipeline in the browser.
 
-![version](https://img.shields.io/badge/version-0.7-blue)
+![version](https://img.shields.io/badge/version-0.9-blue)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -135,6 +136,41 @@ tools/fetch_models.sh --bench    # + Armadillo, dragon
 
 Tests without their model are skipped. Details: `model/README.md`.
 
+## Web tool
+
+![the web tool: Spot, original and reduced to 25 % with its tangent-space normal map](docs/images/webtool.png)
+
+The core compiled to WebAssembly plus a static page (`web/`, no build step, no framework): drop an OBJ or
+Inventor file, get the reduced, unwrapped mesh with its baked normal map, and download it as GLB or
+OBJ + MTL + PNG (one zip). Everything runs in the browser; three.js is vendored (`web/vendor/`, MIT,
+pinned 0.170.0), nothing is fetched from a CDN, no SharedArrayBuffer is needed, so any static host works.
+
+```sh
+# needs Emscripten (brew install emscripten)
+emcmake cmake -S . -B build-wasm -DCMAKE_BUILD_TYPE=Release
+cmake --build build-wasm -j
+cmake --build build-wasm --target web      # copies decimate.js / decimate.wasm into web/
+python3 -m http.server -d web 8000         # open http://localhost:8000
+```
+
+GLB needs a tangent-space map (glTF has no object-space slot). The normal map is exported in the glTF/OpenGL
+green-up convention; the viewer shows the core's own data. A `.glb` dropped on the page is displayed in the
+result pane (round-trip check). Both panes read the input through the core loader (OBJ and Inventor alike).
+Tests: `ctest --test-dir build-wasm` runs W1/W2 and W3/W4 (`npm ci` in `web/test` first, else skipped).
+
+The Wasm module (`wasm/`, an ES6 module factory, ~600 KB) can be used without the page:
+
+```js
+import createDecimate from "./decimate.js";
+const mod = await createDecimate();
+const r = mod.process("spot.obj", bytes, { targetRatio: 0.25, maxCharts: 16, resolution: 512, tangentSpace: true });
+// r.positions, r.indices, per-corner r.uv / r.normals / r.tangents, r.map {width, height, rgb}, r.stats
+const m = mod.loadMesh("bunny.iv", bytes);          // the input as the core reads it: {positions, indices}
+```
+
+Errors (malformed file, bad options) are thrown as JS `Error` with the C++ message. Single-threaded, so
+roughly 2-3x slower than native; up to 4 GB of memory (tangent space at 1024 needs ~2.8 GB).
+
 ## Preconditions
 
 - Faces: 3 ints per triangle, CCW, 0-based.
@@ -151,7 +187,7 @@ Tests without their model are skipped. Details: `model/README.md`.
 - `reduce()` stops early at extreme targets: rejected collapses are not retried.
 - OBJ: positions and faces only; `vt`/`vn` are misread as positions, `f a/b/c`
   keeps `a`, one object per file.
-- Windows and WebAssembly not built yet.
+- Windows not built yet.
 
 ## References
 

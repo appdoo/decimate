@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Decimate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M12 2 3 7v10l9 5 9-5V7z%27 fill=%27none%27 stroke=%27%233b5bdb%27 stroke-width=%271.8%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body data-state="idle">
+<div class="progress" id="progress" hidden><div class="bar"></div></div>
+
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 7l9 5 9-5M12 12v10" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".6"/></svg>
+    <span>Decimate</span><small>reduce &middot; unwrap &middot; bake</small>
+  </div>
+  <div class="stats" id="stats" aria-live="polite">Drop a mesh to begin.</div>
+</header>
+
+<main class="layout">
+  <aside class="panel" aria-label="Settings">
+    <label class="drop" id="drop" tabindex="0">
+      <input type="file" id="file" accept=".obj,.iv,.glb" hidden>
+      <strong>Drop a mesh here</strong>
+      <span>OBJ or Inventor (.iv), or click to browse</span>
+      <span class="hint">Drop a .glb to look at an exported result</span>
+    </label>
+    <button type="button" class="ghost" id="spot">Try Spot</button>
+
+    <fieldset>
+      <legend>Simplify</legend>
+      <label class="row"><span>Target vertices</span><output id="ratioOut">25 %</output>
+        <input type="range" id="ratio" min="2" max="100" step="1" value="25"></label>
+      <label class="row"><span>Max charts</span><output id="chartsOut">16</output>
+        <input type="range" id="charts" min="1" max="64" step="1" value="16"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Normal map</legend>
+      <label class="row"><span>Resolution</span>
+        <select id="resolution"><option>256</option><option selected>512</option><option>1024</option></select></label>
+      <label class="row"><span>Space</span>
+        <select id="space"><option value="object">Object</option><option value="tangent">Tangent</option></select></label>
+    </fieldset>
+
+    <button type="button" class="primary" id="run" disabled>Process</button>
+
+    <fieldset>
+      <legend>Export</legend>
+      <button type="button" id="dlGlb" disabled>Download GLB</button>
+      <button type="button" id="dlObj" disabled>Download OBJ + MTL + PNG (zip)</button>
+    </fieldset>
+  </aside>
+
+  <section class="stage" aria-label="Viewer">
+    <div class="toolbar" role="group" aria-label="View">
+      <label class="chip"><input type="checkbox" id="tNormal" checked><span>Normal map</span></label>
+      <label class="chip"><input type="checkbox" id="tWire"><span>Wireframe</span></label>
+      <label class="chip"><input type="checkbox" id="tAtlas"><span>Atlas</span></label>
+    </div>
+    <div class="panes">
+      <div class="pane" id="paneA"><span class="tag" id="tagA">Original</span><div class="empty" id="emptyA"></div></div>
+      <div class="pane" id="paneB"><span class="tag" id="tagB">Result</span>
+        <canvas id="atlas" hidden></canvas><div class="empty" id="emptyB">The result appears here.</div></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="alert" hidden></div>
+<div class="veil" id="veil" hidden>Drop to load</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

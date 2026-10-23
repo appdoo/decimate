@@ -1,0 +1,10 @@
+{
+  "name": "decimate-web-test",
+  "private": true,
+  "type": "module",
+  "description": "W3/W4 dev dependencies. three must equal the vendored version (the test asserts the vendored loaders are byte-identical).",
+  "devDependencies": {
+    "three": "0.170.0",
+    "gltf-validator": "2.0.0-dev.3.10"
+  }
+}

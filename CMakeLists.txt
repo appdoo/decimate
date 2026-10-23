@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(decimate VERSION 0.8.0 LANGUAGES C CXX)
+project(decimate VERSION 0.9.0 LANGUAGES C CXX)
 
 # NOTE: the canonical build is left at the default optimization level, because the
 # exact-hash characterization goldens (LSCM UV hashes, stacktrace) drift under -O2
@@ -30,6 +30,15 @@ if(EMSCRIPTEN AND NOT CMAKE_CXX_FLAGS MATCHES "pthread")
 endif()
 option(MESH_BUILD_UI        "Build the GLFW interactive viewer (mesh-viewer)" ${PROJECT_IS_TOP_LEVEL})
 
+# Emscripten: the core throws std::runtime_error from the loaders, so every target needs native
+# Wasm exceptions; tests and the GL viewer make no sense there (spec 34).
+if(EMSCRIPTEN)
+    add_compile_options(-fwasm-exceptions)
+    add_link_options(-fwasm-exceptions)
+    set(DECIMATE_BUILD_TESTS OFF)
+    set(MESH_BUILD_UI OFF)
+endif()
+
 # Library subdirectories. diag is a host-only leaf; the decimate library itself
 # (all decimate::<module> components) lives in src/.
 add_subdirectory(libs/diag)
@@ -54,6 +63,15 @@ endif()
 
 if(MESH_BUILD_UI)
     add_subdirectory(ui)
+endif()
+
+# Spec 34: the Wasm module (Emscripten) / its native W2 reference (host tests build).
+if(EMSCRIPTEN)
+    enable_testing()
+    add_subdirectory(wasm)
+    add_subdirectory(web)
+elseif(DECIMATE_BUILD_TESTS)
+    add_subdirectory(wasm/ref)
 endif()
 
 # ---------------------------------------------------------------------------

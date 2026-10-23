@@ -33,6 +33,8 @@ Thumbs.db
 # Modern build dirs (for later phases)
 /build/
 /build-rel/
+/build-wasm/
+/build-w2ref/
 /cmake-build-*/
 
 # Session telemetry (hook-generated, local only)
@@ -73,3 +75,9 @@ diploma_tex/
 /paper2026/
 /tex2026/
 /papers/
+
+# web tool (spec 34)
+/web/test/node_modules/
+/web/decimate.js
+/web/decimate.wasm
+!/web/spot.obj

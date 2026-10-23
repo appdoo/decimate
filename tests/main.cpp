@@ -33,5 +33,5 @@ int main(int argc, char *argv[]) {
 /// mesh-core smoke test: the core is a real, linkable STATIC library and its public API is reachable from the
 /// test runner.
 TEST_CASE("decimate::version returns expected version", "[core][smoke]") {
-    REQUIRE(decimate::version() == 8);
+    REQUIRE(decimate::version() == 9);
 }

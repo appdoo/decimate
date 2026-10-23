@@ -1,0 +1,1 @@
+three 0.170.0 (MIT, vendor/LICENSE), from npm three@0.170.0: build/three.module.min.js + examples/jsm/{controls/OrbitControls,loaders/OBJLoader,loaders/GLTFLoader,utils/BufferGeometryUtils}.js, unmodified. importmap in index.html maps 'three' to ./vendor/three.module.min.js.
