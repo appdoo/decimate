@@ -29,6 +29,9 @@ public:
                                                            float       maxAbsT) const = 0;
 };
 
+/// Normalize `nrm` and encode it as 8-bit RGB: code = round((c + 1) * 127); decode is code / 127 - 1.
+[[nodiscard]] Rgb rangeCompress(math::Vec3f nrm);
+
 /// `bake()` with an injected tracer. Same contract and parameters as `bake()`; `high` supplies the
 /// face indices for the normal blend and must be the mesh the tracer was built over.
 [[nodiscard]] NormalMap bakeWith(const Tracer &tracer, const decimate::MeshData &low,
@@ -36,6 +39,7 @@ public:
                                  const std::vector<math::Vec3f> &lowNormals,
                                  const decimate::MeshData       &high,
                                  const std::vector<math::Vec3f> &highNormals,
-                                 int texSize, int dilatePasses, bool tangentSpace, int threads);
+                                 int texSize, int dilatePasses,
+                                 const std::vector<math::Vec4f> &tangents, int threads);
 
 } // namespace decimate::bake::detail

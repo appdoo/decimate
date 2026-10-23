@@ -462,20 +462,21 @@ static bool edgesCrossAt(const std::vector<Tex2> &p, std::size_t i, std::size_t 
     const Tex2       &b = p[(i + 1) % n];
     const Tex2       &c = p[j];
     const Tex2       &d = p[(j + 1) % n];
-    if (!segmentsCross(a.u, a.v, b.u, b.v, c.u, c.v, d.u, d.v)) {
+    if (!math::segmentsCross(math::Vec2f { a.u, a.v }, math::Vec2f { b.u, b.v }, math::Vec2f { c.u, c.v },
+                             math::Vec2f { d.u, d.v })) {
         return false;
     }
 
     // The crossing parameter along a-b comes from the signed distances of a and b to line c-d.
-    const double da = orient2d(c.u, c.v, d.u, d.v, a.u, a.v);
-    const double db = orient2d(c.u, c.v, d.u, d.v, b.u, b.v);
+    const double da = orientValue(c.u, c.v, d.u, d.v, a.u, a.v);
+    const double db = orientValue(c.u, c.v, d.u, d.v, b.u, b.v);
 
     // A touch, not a crossing: an end point within `tol` of the other segment's line.
     if (tol > 0.0f) {
         const double lcd = std::hypot(static_cast<double>(d.u) - c.u, static_cast<double>(d.v) - c.v);
         const double lab = std::hypot(static_cast<double>(b.u) - a.u, static_cast<double>(b.v) - a.v);
-        const double dc = orient2d(a.u, a.v, b.u, b.v, c.u, c.v);
-        const double dd = orient2d(a.u, a.v, b.u, b.v, d.u, d.v);
+        const double dc = orientValue(a.u, a.v, b.u, b.v, c.u, c.v);
+        const double dd = orientValue(a.u, a.v, b.u, b.v, d.u, d.v);
         if (std::min(std::abs(da) / lcd, std::abs(db) / lcd) <= tol || std::min(std::abs(dc) / lab, std::abs(dd) / lab) <= tol) {
             return false;
         }

@@ -37,6 +37,8 @@ add_executable(mesh_tests
     parametrize_pack_test.cpp
     # Spec 08-02: UV-atlas quality on the real cow (seam correctness + fold-overs)
     uv_quality_test.cpp
+    # Spec 23: robust geometry predicates (orient2d/orient3d/incircle, segmentsCross)
+    predicates_test.cpp
     # Spec 08-03: Chartification-fidelity integration tests on .iv models (D1/D2/D3)
     chart_iv_integration_test.cpp
     # Spec 09-01: HalfEdgeChart + boundary-driven footprint (B1-B2, S1-S5)
@@ -59,6 +61,14 @@ add_executable(mesh_tests
     bake_characterization.cpp
     # Spec 22-01: exact BVH nearest-hit + deterministic parallel bake (I1, I3 cow, I4, B1, S1-S7, [.bench])
     bake_bvh_test.cpp
+    # Spec 26: MikkTSpace tangents + tangent-space bake round-trip
+    tangent_space_test.cpp
+    # Spec 27: bake texel convention (uv = (x + 0.5) / N), round-to-nearest, seam metric
+    bake_convention_test.cpp
+    # Spec 28: frame-aware seam erasure in tangent space
+    tangent_erase_test.cpp
+    # Spec 31: 3x3-block LDL^T of the framed erase
+    block_ldlt_test.cpp
     # Seam-correct gutter fill (bakeSeamFill) — 2-pass cross-chart sampling
     seam_bake_test.cpp
     # Spec 17-01: seam energy metric + seam erasure (goldens from the MIT reference)
@@ -85,6 +95,11 @@ target_link_libraries(mesh_tests PRIVATE
     decimate::math
     diag
 )
+
+# Spec 31: the block-solver test compares against Eigen's SimplicialLDLT (tests only; the library keeps Eigen private).
+FetchContent_GetProperties(eigen SOURCE_DIR decimateEigenDir)
+target_include_directories(mesh_tests SYSTEM PRIVATE "${decimateEigenDir}")
+target_compile_definitions(mesh_tests PRIVATE EIGEN_MPL2_ONLY)
 
 # Spec 11: tga_writer.h lives in ui/ — expose it for the TGA test TU.
 # Only the header is needed; the .cpp source is compiled directly above.

@@ -24,11 +24,14 @@
 
 # --- decimate::math — foundation: vector math + numeric utilities -----------
 # Vec2/3/4, Mat4, Quat, AABB, Plane (absorbed from the former pure-math) +
-# sparse_matrix / sparse_bit_set / associative_heap / mat4-invert.
+# sparse_matrix / sparse_bit_set / associative_heap / mat4-invert + robust predicates.
 # All namespace decimate::math. The single numeric foundation.
 add_library(decimate_math STATIC
     math/sparse_bit_set.cpp
+    math/predicates.cpp
 )
+# Shewchuk's error-free transformations need every product and sum rounded on its own (Spec 23).
+set_source_files_properties(math/predicates.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 add_library(decimate::math ALIAS decimate_math)
 target_include_directories(decimate_math PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_compile_features(decimate_math PUBLIC cxx_std_20)
@@ -117,6 +120,23 @@ add_library(decimate_bake STATIC
 add_library(decimate::bake ALIAS decimate_bake)
 target_include_directories(decimate_bake PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 target_link_libraries(decimate_bake PUBLIC decimate::mesh decimate::raytracing decimate::types decimate::math)
+
+# MikkTSpace (Morten Mikkelsen, zlib licence) is the tangent basis every engine decodes with (Blender,
+# Unity, Unreal, glTF), so a tangent-space map is portable only if it is baked in it.  One C file,
+# dependency-free, Wasm-safe.  Pinned to a commit (the repo has no tags), populated only and compiled
+# into the static decimate_bake as a PRIVATE source: no public header names it and the export set
+# needs no extra target.  Override the download with -DFETCHCONTENT_SOURCE_DIR_MIKKTSPACE=<path>.
+include(FetchContent)
+FetchContent_Declare(
+    mikktspace
+    GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
+    GIT_TAG        3e895b49d05ea07e4c2133156cfa94369e19e409
+    SOURCE_SUBDIR  decimate-populate-only   # no CMakeLists upstream: populate, don't build
+)
+FetchContent_MakeAvailable(mikktspace)
+target_sources(decimate_bake PRIVATE bake/tangents.cpp ${mikktspace_SOURCE_DIR}/mikktspace.c)
+target_include_directories(decimate_bake SYSTEM PRIVATE $<BUILD_INTERFACE:${mikktspace_SOURCE_DIR}>)
+set_source_files_properties(${mikktspace_SOURCE_DIR}/mikktspace.c PROPERTIES COMPILE_OPTIONS -w)
 # Parallel bake (Spec 22-01): std::thread needs the platform thread library on Linux; OFF compiles
 # the same code with one worker.
 if(DECIMATE_THREADS)
@@ -147,6 +167,7 @@ add_library(decimate_seam STATIC
     seam/seam_pieces.cpp
     seam/seam_energy.cpp
     seam/erase_domain.cpp
+    seam/block_ldlt.cpp
     seam/erase_system.cpp
     seam/erase.cpp
     seam/straighten.cpp

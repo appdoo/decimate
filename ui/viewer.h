@@ -51,6 +51,7 @@ struct ShotOptions {
     std::string outDir;
     int         width = 1600; ///< Pixel size of the 3D panel images (atlas images are square, min(w,h)).
     int         height = 1000;
+    bool        tangent = false;    ///< Bake and show the shots in tangent space (MikkTSpace) instead of object space.
     bool        straighten = false; ///< Also write the seam-straightened `_straightened` atlas/bake panels.
 };
 

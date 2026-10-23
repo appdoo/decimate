@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(decimate VERSION 0.7.0 LANGUAGES CXX)
+project(decimate VERSION 0.8.0 LANGUAGES C CXX)
 
 # NOTE: the canonical build is left at the default optimization level, because the
 # exact-hash characterization goldens (LSCM UV hashes, stacktrace) drift under -O2

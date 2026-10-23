@@ -39,10 +39,11 @@ struct CellPolynomial {
 
 /// Both sides of one seam pair, in gamma-aligned texel segments.
 struct PairSegments {
-    Segment     a;
-    Segment     b;
-    math::Vec2d nA; // inward normals (Gradient pieces only)
-    math::Vec2d nB;
+    Segment                  a;
+    Segment                  b;
+    math::Vec2d              nA; // inward normals (Gradient pieces only)
+    math::Vec2d              nB;
+    std::array<EdgeFrame, 2> frame; // tangent frames of A and B (identity unless framed)
 };
 
 } // namespace
@@ -153,9 +154,9 @@ static math::Vec2d inwardNormal(const TexturedMesh &tm, HalfEdgeRef he) {
     const double      vx = static_cast<double>(p1.x) - static_cast<double>(p0.x);
     const double      vy = static_cast<double>(p1.y) - static_cast<double>(p0.y);
     const double      area2 = (static_cast<double>(p1.x) - static_cast<double>(p0.x)) *
-                             (static_cast<double>(p2.y) - static_cast<double>(p0.y)) -
-                         (static_cast<double>(p2.x) - static_cast<double>(p0.x)) *
-                             (static_cast<double>(p1.y) - static_cast<double>(p0.y));
+                                  (static_cast<double>(p2.y) - static_cast<double>(p0.y)) -
+                              (static_cast<double>(p2.x) - static_cast<double>(p0.x)) *
+                                  (static_cast<double>(p1.y) - static_cast<double>(p0.y));
 
     // The triangle's winding decides which perpendicular points inwards.
     const math::Vec2d perp = area2 > 0.0 ? math::Vec2d(-vy, vx) : math::Vec2d(vy, -vx);
@@ -171,14 +172,32 @@ static std::array<int, 4> cellTexels(Cell c, TexelGrid grid) {
 }
 
 
+/// T and N of @p he between its corner @p c0 (gamma 0) and @p c1 (gamma 1).
+static EdgeFrame edgeFrame(const TexturedMesh &tm, const FrameField &fr, HalfEdgeRef he, int c0, int c1) {
+    const std::size_t f = 3 * static_cast<std::size_t>(he.face);
+    auto              tan = [&](int c) {
+        return math::Vec3d(fr.tangents[f + c % 3].x, fr.tangents[f + c % 3].y, fr.tangents[f + c % 3].z);
+    };
+    auto nor = [&](int c) {
+        return math::Vec3d(fr.normals[static_cast<std::size_t>(tm.faceV[f + c % 3])]);
+    };
+    return { tan(c0), tan(c1), nor(c0), nor(c1), fr.tangents[f].w < 0.0f ? -1.0 : 1.0 };
+}
+
+
 /// Both half-edges of @p pair as texel segments, B reversed so gamma addresses one 3D point.
-static PairSegments pairSegments(const TexturedMesh &tm, const SeamPair &pair, TexelGrid grid) {
+static PairSegments pairSegments(const TexturedMesh &tm, const SeamPair &pair, TexelGrid grid,
+                                 const FrameField *frames) {
     PairSegments ps;
     ps.a = halfEdgeSegment(tm, pair.a, grid);
     const Segment rb = halfEdgeSegment(tm, pair.b, grid);
     ps.b = { rb.x1, rb.y1, rb.x0, rb.y0 }; // B runs end-to-start: same 3D point as A
     ps.nA = inwardNormal(tm, pair.a);
     ps.nB = inwardNormal(tm, pair.b);
+    if (frames != nullptr) {
+        ps.frame = { edgeFrame(tm, *frames, pair.a, pair.a.corner, pair.a.corner + 1),
+                     edgeFrame(tm, *frames, pair.b, pair.b.corner + 1, pair.b.corner) };
+    }
     return ps;
 }
 
@@ -201,6 +220,7 @@ static SeamPiece makePiece(const PairSegments &ps, double a, double b, double le
     piece.a = a;
     piece.b = b;
     piece.length3D = length;
+    piece.frame = ps.frame;
 
     // Side A fills slots 0..3, side B slots 4..7 (pre-multiplied by the sign).
     const auto ta = cellTexels(cellA, grid);
@@ -221,39 +241,13 @@ static SeamPiece makePiece(const PairSegments &ps, double a, double b, double le
 
 /// Split one seam pair at every texel-line crossing and append its pieces.
 static void appendPairPieces(const TexturedMesh &tm, const SeamPair &pair, TexelGrid grid,
-                             PieceKind kind, std::vector<SeamPiece> &out) {
-    const PairSegments           ps = pairSegments(tm, pair, grid);
+                             PieceKind kind, const FrameField *frames, std::vector<SeamPiece> &out) {
+    const PairSegments           ps = pairSegments(tm, pair, grid, frames);
     const std::array<Segment, 2> both { ps.a, ps.b };
     const std::vector<double>    g = splitParameters(both, grid);
     for (std::size_t i = 0; i + 1 < g.size(); ++i) {
         if (g[i + 1] - g[i] > kMinPiece) {
             out.push_back(makePiece(ps, g[i], g[i + 1], pair.length3D, grid, kind));
-        }
-    }
-}
-
-
-/// sum_i phi_i * texel_i[channel]: the mismatch of one channel at one quadrature node.
-static double channelValue(const SeamPiece &piece, const std::array<double, 8> &phi,
-                           std::span<const double> texels, std::size_t channel) {
-    double v = 0.0;
-    for (std::size_t i = 0; i < 8; ++i) {
-        v += phi[i] * texels[3 * static_cast<std::size_t>(piece.texel[i]) + channel];
-    }
-    return v;
-}
-
-
-/// Add length * integral of the squared mismatch of @p piece to @p acc, per channel.
-static void accumulatePiece(const SeamPiece &piece, std::span<const double> texels,
-                            std::array<double, 3> &acc) {
-    const GaussRule rule = gaussOn(piece.a, piece.b);
-    for (std::size_t q = 0; q < 3; ++q) {
-        const std::array<double, 8> phi = evaluatePiece(piece, rule.gamma[q]);
-        const double                w = rule.weight[q] * piece.length3D;
-        for (std::size_t ch = 0; ch < 3; ++ch) {
-            const double v = channelValue(piece, phi, texels, ch);
-            acc[ch] += w * v * v;
         }
     }
 }
@@ -286,10 +280,10 @@ std::vector<Cell> cellsAlong(const Segment &seg, TexelGrid grid) {
 
 
 std::vector<SeamPiece> seamPieces(const TexturedMesh &tm, const SeamTopology &topo, TexelGrid grid,
-                                  PieceKind kind) {
+                                  PieceKind kind, const FrameField *frames) {
     std::vector<SeamPiece> pieces;
     for (const SeamPair &pair : topo.seams) {
-        appendPairPieces(tm, pair, grid, kind, pieces);
+        appendPairPieces(tm, pair, grid, kind, frames, pieces);
     }
     return pieces;
 }
@@ -310,15 +304,6 @@ bool hasSeamLength(const SeamTopology &topo) {
 }
 
 
-GaussRule gaussOn(double a, double b) {
-    constexpr double kNode = 0.7745966692414834; // sqrt(3/5)
-    const double     mid = 0.5 * (a + b);
-    const double     half = 0.5 * (b - a);
-    return { { mid - half * kNode, mid, mid + half * kNode },
-             { half * 5.0 / 9.0, half * 8.0 / 9.0, half * 5.0 / 9.0 } };
-}
-
-
 std::array<double, 8> evaluatePiece(const SeamPiece &piece, double gamma) {
     std::array<double, 8> phi {};
     for (std::size_t i = 0; i < 8; ++i) {
@@ -328,14 +313,63 @@ std::array<double, 8> evaluatePiece(const SeamPiece &piece, double gamma) {
 }
 
 
+GaussRule5 gauss5On(double a, double b) {
+    constexpr std::array<double, 5> kNode { -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831,
+                                            0.9061798459386640 };
+    constexpr std::array<double, 5> kWeight { 0.2369268850561891, 0.4786286704993665, 0.5688888888888889,
+                                              0.4786286704993665, 0.2369268850561891 };
+    const double                    mid = 0.5 * (a + b);
+    const double                    half = 0.5 * (b - a);
+    GaussRule5                      rule;
+    for (std::size_t i = 0; i < 5; ++i) {
+        rule.gamma[i] = mid + half * kNode[i];
+        rule.weight[i] = half * kWeight[i];
+    }
+    return rule;
+}
+
+
+/// Row-major F = [T | w N x T | N] of @p e at @p gamma.
+static std::array<double, 9> frameMatrix(const EdgeFrame &e, double gamma) {
+    const math::Vec3d t = e.t0 * (1.0 - gamma) + e.t1 * gamma;
+    const math::Vec3d n = e.n0 * (1.0 - gamma) + e.n1 * gamma;
+    const math::Vec3d b = n.cross(t) * e.w;
+    return { t.x, b.x, n.x, t.y, b.y, n.y, t.z, b.z, n.z };
+}
+
+
+std::array<std::array<double, 9>, 8> frameBlocks(const SeamPiece &piece, double gamma) {
+    const std::array<double, 8>                phi = evaluatePiece(piece, gamma);
+    const std::array<std::array<double, 9>, 2> f { frameMatrix(piece.frame[0], gamma), frameMatrix(piece.frame[1], gamma) };
+    std::array<std::array<double, 9>, 8>       blocks {};
+    for (std::size_t i = 0; i < 8; ++i) {
+        for (std::size_t k = 0; k < 9; ++k) {
+            blocks[i][k] = phi[i] * f[i / 4][k];
+        }
+    }
+    return blocks;
+}
+
+
 std::array<double, 3> integrateEnergy(std::span<const SeamPiece> pieces, double totalLength,
-                                      std::span<const double> texels) {
+                                           std::span<const double> texels) {
     std::array<double, 3> acc {};
     for (const SeamPiece &piece : pieces) {
-        accumulatePiece(piece, texels, acc);
+        const GaussRule5 rule = gauss5On(piece.a, piece.b);
+        for (std::size_t q = 0; q < 5; ++q) {
+            const auto            blocks = frameBlocks(piece, rule.gamma[q]);
+            std::array<double, 3> r {};
+            for (std::size_t i = 0; i < 8; ++i) {
+                const std::size_t t = 3 * static_cast<std::size_t>(piece.texel[i]);
+                for (std::size_t k = 0; k < 3; ++k) {
+                    r[k] += blocks[i][3 * k] * texels[t] + blocks[i][3 * k + 1] * texels[t + 1] + blocks[i][3 * k + 2] * texels[t + 2];
+                }
+            }
+            for (std::size_t k = 0; k < 3; ++k) {
+                acc[k] += rule.weight[q] * piece.length3D * r[k] * r[k];
+            }
+        }
     }
-
-    // Normalize by the total seam length so D_total is independent of mesh scale.
     for (double &d : acc) {
         d /= totalLength;
     }

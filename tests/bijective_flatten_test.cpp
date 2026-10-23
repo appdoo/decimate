@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <decimate/chart/chart.h>
 #include <decimate/chart/parametrize.h>
+#include <decimate/math/predicates.h>
 #include <decimate/mesh/half_edge_mesh.h>
 #include <decimate/types/mesh_data.h>
 #include <decimate/types/mesh_types.h>
@@ -176,19 +177,10 @@ double signedArea(const detail::Problem &p, const std::vector<double> &x, std::s
 }
 
 
-/// Orientation determinant of (a, b, c): positive for a counter-clockwise turn.
-double orient(const double *a, const double *b, const double *c) {
-    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-}
-
-
-/// Do segments ab and cd cross properly (touching endpoints do not count)?
+/// Do segments ab and cd cross properly (touching endpoints do not count)?  Exact predicate of the core.
 bool segmentsCross(const double *a, const double *b, const double *c, const double *d) {
-    const double d1 = orient(c, d, a);
-    const double d2 = orient(c, d, b);
-    const double d3 = orient(a, b, c);
-    const double d4 = orient(a, b, d);
-    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    return math::segmentsCross(math::Vec2d { a[0], a[1] }, math::Vec2d { b[0], b[1] }, math::Vec2d { c[0], c[1] },
+                               math::Vec2d { d[0], d[1] });
 }
 
 
@@ -223,7 +215,10 @@ bool anyBoundaryCrossing(const detail::Problem &p, const std::vector<double> &x)
 /// Is x a valid interior point: every triangle positive, no two boundary edges crossing?
 bool valid(const detail::Problem &p, const std::vector<double> &x) {
     for (std::size_t f = 0; f < p.ref.size(); ++f) {
-        if (!(signedArea(p, x, f) > 0.0)) {
+        const double *a = &x[2 * static_cast<std::size_t>(p.tri[3 * f])];
+        const double *b = &x[2 * static_cast<std::size_t>(p.tri[3 * f + 1])];
+        const double *c = &x[2 * static_cast<std::size_t>(p.tri[3 * f + 2])];
+        if (!(math::orient2d(math::Vec2d { a[0], a[1] }, math::Vec2d { b[0], b[1] }, math::Vec2d { c[0], c[1] }) > 0.0)) {
             return false;
         }
     }

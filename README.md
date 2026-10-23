@@ -54,9 +54,10 @@ matching texels.
 
 **Seam erasure.** In object space the texels along every seam are solved so both sides of
 the seam interpolate to the same value (Liu et al. 2017, section 4): the seam mismatch drops
-from ~2.5e-3 to ~1e-10 per channel on Spot. Tangent space uses the seam-correct fill —
-erasure is not defined there (paper, footnote 3). `Gutter::Seamless`, the default, picks
-the right one per space.
+from ~2.5e-3 to ~1e-10 per channel on Spot. Tangent space is erased too, frame-aware: the
+MikkTSpace bases differ across a seam, so the solve matches the decoded normals, not the
+raw texel values (bunny: seam mismatch 3.3e-3 → 8.4e-6). Both spaces share one sparse
+block-LDLᵀ solver. `Gutter::Seamless`, the default, is erasure in both spaces.
 
 ![plain dilation vs seam erased](docs/images/seamless.png)
 
@@ -160,6 +161,10 @@ Tests without their model are skipped. Details: `model/README.md`.
   decoupling of shape from mesh resolution.* ACM Trans. Graph. 36(6), Article 216, 2017.
 - P. Sander, J. Snyder, S. Gortler, H. Hoppe. *Texture Mapping Progressive Meshes.*
   SIGGRAPH 2001 (stretch metric).
+- M. Mikkelsen. *Simulation of Wrinkled Surfaces Revisited.* Master's thesis, University of
+  Copenhagen, 2008 (MikkTSpace; `mikktspace.c`, zlib licence, fetched at configure time).
+- J. R. Shewchuk. *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric
+  Predicates.* Discrete & Computational Geometry 18(3), 1997 (public domain).
 - M. Garland, P. Heckbert. *Surface Simplification Using Quadric Error Metrics.* SIGGRAPH 1997.
 - B. Lévy, S. Petitjean, N. Ray, J. Maillot. *Least Squares Conformal Maps for Automatic
   Texture Atlas Generation.* SIGGRAPH 2002.

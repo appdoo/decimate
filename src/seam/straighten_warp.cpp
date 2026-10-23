@@ -8,6 +8,7 @@
 #include <Eigen/SparseCholesky>
 #include <Eigen/SparseLU>
 #include <algorithm>
+#include <decimate/math/predicates.h>
 #include <cmath>
 #include <cstddef>
 
@@ -196,15 +197,15 @@ static bool warpChart(const Atlas &atlas, const std::vector<int> &faces, std::ve
 }
 
 
-/// Twice the signed area of triangle (a, b, c).
-static double signedArea(const Vec2d &a, const Vec2d &b, const Vec2d &c) {
-    return ((b[0] - a[0]) * (c[1] - a[1])) - ((b[1] - a[1]) * (c[0] - a[0]));
-}
-
-
 /// UV of vertex @p u in the displaced UV array, in double.
 static Vec2d uvOf(const std::vector<math::Vec2f> &uvs, int u) {
     return { static_cast<double>(uvs[idx(u)].x), static_cast<double>(uvs[idx(u)].y) };
+}
+
+
+/// Exact orientation of triangle (a, b, c): the sign of its twice-signed UV area.
+static double orientation(const Vec2d &a, const Vec2d &b, const Vec2d &c) {
+    return math::orient2d(math::Vec2d { a[0], a[1] }, math::Vec2d { b[0], b[1] }, math::Vec2d { c[0], c[1] });
 }
 
 
@@ -216,8 +217,8 @@ static bool folds(const TexturedMesh &tm, const std::vector<math::Vec2f> &after,
         for (std::size_t k = 0; k < 3; ++k) {
             u[k] = tm.faceU[(3 * idx(f)) + k];
         }
-        const double before = signedArea(uvOf(tm, u[0]), uvOf(tm, u[1]), uvOf(tm, u[2]));
-        const double now = signedArea(uvOf(after, u[0]), uvOf(after, u[1]), uvOf(after, u[2]));
+        const double before = orientation(uvOf(tm, u[0]), uvOf(tm, u[1]), uvOf(tm, u[2]));
+        const double now = orientation(uvOf(after, u[0]), uvOf(after, u[1]), uvOf(after, u[2]));
 
         // Triangles already degenerate in the input cannot be judged and are skipped.
         if (before != 0.0 && (!std::isfinite(now) || now == 0.0 || (before > 0.0) != (now > 0.0))) {

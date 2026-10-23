@@ -424,12 +424,6 @@ static void backSubstituteUVs(const std::vector<double> &x,
 }
 
 
-/// Do segments ab and cd cross properly (endpoints shared by the caller are excluded)?
-[[nodiscard]] static bool crosses(const UV &a, const UV &b, const UV &c, const UV &d) noexcept {
-    return segmentsCross(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y);
-}
-
-
 /// Flattening quality in O(n + B^2) (n triangles, B boundary edges; the B^2 is the boundary
 /// self-crossing loop): flipped/degenerate triangles against the chart's orientation (sign of the summed
 /// signed area), and boundary edges crossing each other.  Disk + no flip + simple boundary => the map
@@ -449,8 +443,8 @@ void measureQuality(HalfEdgeChart &ac) {
     // A triangle against that orientation, or with no area (NaN included), is flipped.
     const double sign = total < 0.0 ? -1.0 : 1.0;
     for (int f = 0; f < nf; ++f) {
-        const double a = sign * orient(ac.uv[localCorner(ac, f, 0)], ac.uv[localCorner(ac, f, 1)],
-                                       ac.uv[localCorner(ac, f, 2)]);
+        const double a = sign * math::orient2d(ac.uv[localCorner(ac, f, 0)], ac.uv[localCorner(ac, f, 1)],
+                                               ac.uv[localCorner(ac, f, 2)]);
         if (!(a > 0.0)) {
             ++ac.flippedTriangles;
         }
@@ -472,7 +466,7 @@ void measureQuality(HalfEdgeChart &ac) {
             if (a == c || a == d || b == c || b == d) {
                 continue; // neighbours share an endpoint and touch there by construction
             }
-            if (crosses(ac.uv[a], ac.uv[b], ac.uv[c], ac.uv[d])) {
+            if (math::segmentsCross(ac.uv[a], ac.uv[b], ac.uv[c], ac.uv[d])) {
                 ac.boundarySimple = false;
                 break;
             }

@@ -33,8 +33,8 @@
 /// `#include <decimate.h>`.
 
 #define DECIMATE_VERSION_MAJOR  0
-#define DECIMATE_VERSION_MINOR  7
-#define DECIMATE_VERSION_STRING "0.7"
+#define DECIMATE_VERSION_MINOR  8
+#define DECIMATE_VERSION_STRING "0.8"
 
 namespace decimate {
 /// @brief Library version as MAJOR*100 + MINOR. A real (linkable) symbol, so it

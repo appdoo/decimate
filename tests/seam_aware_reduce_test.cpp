@@ -677,7 +677,7 @@ Full buildFull(const std::string &path, bool straighten) {
     const auto highN =
         decimate::bake::computeVertexNormals(high, decimate::bake::Weighting::EqualUnit);
     const NormalMap map =
-        decimate::bake::bake(low, full.tm.cornerUV(), lowN, high, highN, kTex, 2, false);
+        decimate::bake::bake(low, full.tm.cornerUV(), lowN, high, highN, kTex, 2, {});
     full.erased = decimate::seam::erase(full.tm, map, decimate::seam::NormalSpace::Object);
     return full;
 }

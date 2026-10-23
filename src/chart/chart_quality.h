@@ -5,25 +5,14 @@
 /// @brief Private: the O(n + B^2) flattening-quality check (B = boundary edges) shared by the LSCM and the bijective mapper.
 
 #include <decimate/chart/parametrize.h>
+#include <decimate/math/predicates.h>
 
 namespace decimate::chart {
 
-/// Orientation determinant of (a, b, c) in double: > 0 when c is left of a->b.
-[[nodiscard]] inline double orient2d(float ax, float ay, float bx, float by, float cx, float cy) noexcept {
-    return (static_cast<double>(bx) - ax) * (static_cast<double>(cy) - ay) -
-           (static_cast<double>(by) - ay) * (static_cast<double>(cx) - ax);
-}
-
-
-/// Do segments a-b and c-d cross properly (interiors intersect at one point, no shared end point)?
-/// The one crossing predicate of the O(B^2) simple-boundary checks (`measureQuality`, `hasSelfCrossing`).
-[[nodiscard]] inline bool segmentsCross(float ax, float ay, float bx, float by, float cx, float cy, float dx,
-                                        float dy) noexcept {
-    const double d1 = orient2d(cx, cy, dx, dy, ax, ay);
-    const double d2 = orient2d(cx, cy, dx, dy, bx, by);
-    const double d3 = orient2d(ax, ay, bx, by, cx, cy);
-    const double d4 = orient2d(ax, ay, bx, by, dx, dy);
-    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+/// Twice the signed area of (a, b, c) in double, from float UVs: a VALUE (the sign of a sliver can be wrong; decide
+/// with `math::orient2d`).  Bit-identical to the former local determinant.
+[[nodiscard]] inline double orientValue(float ax, float ay, float bx, float by, float cx, float cy) noexcept {
+    return math::triangleArea2(math::Vec2d { ax, ay }, math::Vec2d { bx, by }, math::Vec2d { cx, cy });
 }
 
 

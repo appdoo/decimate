@@ -33,7 +33,7 @@ struct Bc3 {
 };
 
 
-/// Corner coordinate in texel units, [0, texSize-1].
+/// Coordinate in texel units, [0, texSize]: texel x spans [x, x+1] and its centre is x + 0.5.
 struct UV2 {
     float u;
     float v;
@@ -63,8 +63,10 @@ struct FaceSetup {
     math::Vec3f pa; ///< low vertex positions (ray origins)
     math::Vec3f pb;
     math::Vec3f pc;
-    math::Vec3f tFace; ///< tangent-space option: per-face tangent from the UV gradient
-    bool        tValid = false;
+    math::Vec4f tg1; ///< tangent-space option: MikkTSpace corner tangents (xyz = T, w = sign)
+    math::Vec4f tg2;
+    math::Vec4f tg3;
+    bool        tValid = false; ///< all three corner tangents exist (else the texel stores the flat normal)
 };
 
 
@@ -158,34 +160,44 @@ static math::Vec3f interpolateVec3(const Bc3         &bc,
 }
 
 
-/// Normalize and range-compress a normal into 8-bit RGB: (c + 1) * 127.
-/// 2003: rangecompress(), legacy2003/split/texturesample.cpp:70.
-static Rgb rangeCompress(math::Vec3f nrm) {
-    nrm.normalize();
-    return { static_cast<std::uint8_t>((nrm.x + 1.0f) * 127.0f),
-             static_cast<std::uint8_t>((nrm.y + 1.0f) * 127.0f),
-             static_cast<std::uint8_t>((nrm.z + 1.0f) * 127.0f) };
+/// Round the 8-bit code of `c` in [-1, 1]: round((c + 1) * 127). The decode is `code / 127 - 1`, so
+/// code 127 is exactly 0 and 254 is exactly +1; every code is the centre of its bucket, the error
+/// is at most 0.5 / 127. 2003 truncated here (legacy2003/split/texturesample.cpp:74-76), which
+/// biases every component by half a code, and by a different amount in every tangent frame.
+static std::uint8_t encodeComponent(float c) {
+    return static_cast<std::uint8_t>(std::floor((c + 1.0f) * 127.0f + 0.5f));
 }
 
 
+namespace detail {
+
+Rgb rangeCompress(math::Vec3f nrm) {
+    nrm.normalize();
+    return { encodeComponent(nrm.x), encodeComponent(nrm.y), encodeComponent(nrm.z) };
+}
+
+} // namespace detail
+
+
 /// Raster setup of low face `fi`: UVs scaled to texels, clamped bounding box, ray origins/directions
-/// and (optionally) the tangent. Run once per face so both bake phases see identical floats.
+/// and (in tangent space) the corner tangents. Run once per face so both bake phases see identical floats.
 static FaceSetup makeFaceSetup(int fi, const decimate::MeshData &low,
                                const std::vector<math::Vec2f> &cornerUV,
                                const std::vector<math::Vec3f> &lowNormals,
-                               int texSize, bool tangentSpace) {
+                               const std::vector<math::Vec4f> &tangents, int texSize) {
     FaceSetup f;
 
     // positions is std::vector<Vec3f>; Vec3f is tightly packed, so the flat coord buffer indexes
     // as lp[3*v+k] (the offsets below are the hoisted 3*v bases).
     const float *lp = reinterpret_cast<const float *>(low.positions.data());
     const int   *li = low.indices.data();
-    const float  ts1 = static_cast<float>(texSize - 1);
+    const float  ts = static_cast<float>(texSize);
 
-    // Corner UV in [0,1] -> scaled to [0, texSize-1]
-    f.t1 = { cornerUV[3 * fi + 0].x * ts1, cornerUV[3 * fi + 0].y * ts1 };
-    f.t2 = { cornerUV[3 * fi + 1].x * ts1, cornerUV[3 * fi + 1].y * ts1 };
-    f.t3 = { cornerUV[3 * fi + 2].x * ts1, cornerUV[3 * fi + 2].y * ts1 };
+    // Corner UV in [0,1] -> texels [0, texSize]: texel x is centred at uv = (x + 0.5) / texSize, where
+    // GL and the seam erasure read it (the 2003 bake scaled by texSize - 1).
+    f.t1 = { cornerUV[3 * fi + 0].x * ts, cornerUV[3 * fi + 0].y * ts };
+    f.t2 = { cornerUV[3 * fi + 1].x * ts, cornerUV[3 * fi + 1].y * ts };
+    f.t3 = { cornerUV[3 * fi + 2].x * ts, cornerUV[3 * fi + 2].y * ts };
 
     f.bary = (f.t2.u - f.t1.u) * (f.t3.v - f.t1.v) - (f.t3.u - f.t1.u) * (f.t2.v - f.t1.v);
 
@@ -223,24 +235,15 @@ static FaceSetup makeFaceSetup(int fi, const decimate::MeshData &low,
     f.pb = { lp[ob], lp[ob + 1], lp[ob + 2] };
     f.pc = { lp[oc], lp[oc + 1], lp[oc + 2] };
 
-    // Tangent-space option: stored normals become relative to the surface frame -> near-flat
-    // (0,0,1), so chart values barely differ across a seam.
-    if (tangentSpace) {
-        const math::Vec2f &uA = cornerUV[3 * fi + 0];
-        const math::Vec2f &uB = cornerUV[3 * fi + 1];
-        const math::Vec2f &uC = cornerUV[3 * fi + 2];
-        const float        du1 = uB.x - uA.x;
-        const float        dv1 = uB.y - uA.y;
-        const float        du2 = uC.x - uA.x;
-        const float        dv2 = uC.y - uA.y;
-        const float        det = du1 * dv2 - du2 * dv1;
-
-        // A (near-)zero UV area has no tangent; tValid stays false and the texel keeps object space.
-        if (std::fabs(det) > 1e-12f) {
-            const float r = 1.0f / det;
-            f.tFace = (f.pb - f.pa) * (dv2 * r) - (f.pc - f.pa) * (dv1 * r);
-            f.tValid = f.tFace.lengthSquared() > 1e-12f;
-        }
+    // Tangent-space option: stored normals become relative to the MikkTSpace frame -> near-flat
+    // (0,0,1), so chart values barely differ across a seam. A zero tangent marks a face with no basis.
+    if (!tangents.empty()) {
+        f.tg1 = tangents[3 * fi + 0];
+        f.tg2 = tangents[3 * fi + 1];
+        f.tg3 = tangents[3 * fi + 2];
+        f.tValid = f.tg1.x * f.tg1.x + f.tg1.y * f.tg1.y + f.tg1.z * f.tg1.z > 0.0f &&
+                   f.tg2.x * f.tg2.x + f.tg2.y * f.tg2.y + f.tg2.z * f.tg2.z > 0.0f &&
+                   f.tg3.x * f.tg3.x + f.tg3.y * f.tg3.y + f.tg3.z * f.tg3.z > 0.0f;
     }
     return f;
 }
@@ -250,7 +253,7 @@ static FaceSetup makeFaceSetup(int fi, const decimate::MeshData &low,
 ///
 /// Deliberate deviation from 2003: `mapfacert` samples at the texel corner `(float)x, (float)y`
 /// (`legacy2003/split/texturesample.cpp:177`); this samples at the centre (`+ 0.5f`), which is the
-/// position a bilinear GL lookup reads for texel (x, y). The bake goldens are pinned on the centre.
+/// position a bilinear GL lookup reads for texel (x, y).
 static Bc3 texelBary(const FaceSetup &f, int x, int y) {
     return barycentricUV(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f, f.t1, f.t2, f.t3,
                          f.bary);
@@ -277,6 +280,32 @@ static void claimTexels(const FaceSetup &f, int fi, int texSize, std::vector<int
 }
 
 
+/// Express the unit normal `want` in the MikkTSpace frame of the texel, so that the engines' decode
+/// `normalize(x*T + y*B + z*N)` (T, N interpolated unnormalised, B = sign * cross(N, T)) returns `want`.
+/// The frame is not orthonormal, so this is the inverse of [T B N] (Cramer), not three dot products.
+/// A face without a tangent, or a collapsed frame (|det| tiny: T parallel to N), stores the flat normal
+/// (0,0,1), which decodes to the interpolated vertex normal: no detail, but no garbage either.
+static math::Vec3f toTangentSpace(const FaceSetup &f, const Bc3 &bc, const math::Vec3f &n,
+                                  const math::Vec3f &want) {
+    const math::Vec3f flat { 0.0f, 0.0f, 1.0f };
+    if (!f.tValid) {
+        return flat;
+    }
+
+    const math::Vec3f t = interpolateVec3(bc, { f.tg1.x, f.tg1.y, f.tg1.z }, { f.tg2.x, f.tg2.y, f.tg2.z },
+                                          { f.tg3.x, f.tg3.y, f.tg3.z });
+    const float       sign = bc.u * f.tg1.w + bc.v * f.tg2.w + bc.w * f.tg3.w < 0.0f ? -1.0f : 1.0f;
+    const math::Vec3f b = n.cross(t) * sign;
+
+    const math::Vec3f bn = b.cross(n);
+    const float       det = t.dot(bn);
+    if (!(std::fabs(det) > 1e-6f * t.length() * b.length() * n.length())) {
+        return flat;
+    }
+    return { want.dot(bn) / det, want.dot(n.cross(t)) / det, want.dot(t.cross(b)) / det };
+}
+
+
 Rgb ShadeJob::shadeTexel(const FaceSetup &f, int x, int y) const {
     const int *hi = high.indices.data();
     const Bc3  bc = texelBary(f, x, y);
@@ -296,17 +325,10 @@ Rgb ShadeJob::shadeTexel(const FaceSetup &f, int x, int y) const {
     }
     snrm.normalize();
 
-    if (tangentSpace && f.tValid) {
-        // Express snrm in the per-texel tangent frame (N = interpolated low normal,
-        // T = Gram-Schmidt'd face tangent, B = N x T).
-        math::Vec3f nN = n;
-        nN.normalize();
-        math::Vec3f tT = f.tFace - nN * nN.dot(f.tFace);
-        tT.normalize();
-        const math::Vec3f bB = nN.cross(tT);
-        snrm = math::Vec3f { snrm.dot(tT), snrm.dot(bB), snrm.dot(nN) };
+    if (tangentSpace) {
+        snrm = toTangentSpace(f, bc, n, snrm);
     }
-    return rangeCompress(snrm);
+    return detail::rangeCompress(snrm);
 }
 
 
@@ -460,7 +482,7 @@ NormalMap bakeWith(const Tracer &tracer, const decimate::MeshData &low,
                    const std::vector<math::Vec2f> &lowCornerUV,
                    const std::vector<math::Vec3f> &lowNormals, const decimate::MeshData &high,
                    const std::vector<math::Vec3f> &highNormals, int texSize, int dilatePasses,
-                   bool tangentSpace, int threads) {
+                   const std::vector<math::Vec4f> &tangents, int threads) {
     // Everything starts as the background sentinel; only owned texels are overwritten.
     NormalMap nm;
     nm.width = texSize;
@@ -474,12 +496,12 @@ NormalMap bakeWith(const Tracer &tracer, const decimate::MeshData &low,
     setup.reserve(static_cast<std::size_t>(nlf));
     std::vector<int> owner(static_cast<std::size_t>(texSize) * texSize, -1);
     for (int fi = 0; fi < nlf; fi++) {
-        setup.push_back(makeFaceSetup(fi, low, lowCornerUV, lowNormals, texSize, tangentSpace));
+        setup.push_back(makeFaceSetup(fi, low, lowCornerUV, lowNormals, tangents, texSize));
         claimTexels(setup.back(), fi, texSize, owner);
     }
 
     // Phase 2 (parallel): shade each owned texel; each row is written by exactly one worker.
-    const ShadeJob job { setup, owner, tracer, high, highNormals, tangentSpace };
+    const ShadeJob job { setup, owner, tracer, high, highNormals, !tangents.empty() };
     forEachRow(texSize, workerCount(threads, texSize), [&](int y) { job.shadeRow(y, nm); });
 
     // Dilation is opt-in (dilatePasses == 0 leaves crisp charts, no normals outside them). The 2003
@@ -504,12 +526,12 @@ NormalMap bake(const decimate::MeshData       &low,
                const std::vector<math::Vec3f> &highNormals,
                int                             texSize,
                int                             dilatePasses,
-               bool                            tangentSpace,
+               const std::vector<math::Vec4f> &tangents,
                int                             threads) {
     // The BVH is built once per bake and shared read-only by all workers.
     const BvhTracer tracer(high);
     return detail::bakeWith(tracer, low, lowCornerUV, lowNormals, high, highNormals, texSize, dilatePasses,
-                            tangentSpace, threads);
+                            tangents, threads);
 }
 
 
@@ -538,14 +560,15 @@ static std::pair<float, float> projectOnSegment(math::Vec2f g,
 
 
 /// Bilinear sample the atlas at floating-point texel coordinates (u, v), skipping background taps
-/// so a chart edge does not bleed the sentinel colour. Coordinates clamp to [0, texSize-1]; returns
-/// the background sentinel when no tap holds data.
+/// so a chart edge does not bleed the sentinel colour. (u, v) are in texel units with texel x centred
+/// at x + 0.5, like every coordinate of the bake; they clamp to the outermost centres. Returns the
+/// background sentinel when no tap holds data.
 static Rgb bilinearSample(const std::vector<Rgb> &pixels, int texSize, float u, float v) {
     const Rgb kBg { 128, 128, 128 };
 
-    // Clamp to valid range
-    u = std::max(0.0f, std::min(static_cast<float>(texSize - 1), u));
-    v = std::max(0.0f, std::min(static_cast<float>(texSize - 1), v));
+    // Centre convention: the tap at index i sits at i + 0.5. Clamp to the outermost centres.
+    u = std::max(0.0f, std::min(static_cast<float>(texSize - 1), u - 0.5f));
+    v = std::max(0.0f, std::min(static_cast<float>(texSize - 1), v - 0.5f));
 
     int x0 = static_cast<int>(u);
     int y0 = static_cast<int>(v);
@@ -590,14 +613,14 @@ static Rgb bilinearSample(const std::vector<Rgb> &pixels, int texSize, float u, 
     if (w < 1e-6f) {
         return kBg;
     }
-    return { static_cast<std::uint8_t>(r / w),
-             static_cast<std::uint8_t>(g / w),
-             static_cast<std::uint8_t>(b / w) };
+    return { static_cast<std::uint8_t>(r / w + 0.5f),
+             static_cast<std::uint8_t>(g / w + 0.5f),
+             static_cast<std::uint8_t>(b / w + 0.5f) };
 }
 
 
 /// Edge geometry of half-edge `he` (= 3*f + k) in texel-scale coordinates.
-/// Returns {p0 = origin UV, p1 = end UV, opposite vertex UV} scaled to [0, texSize-1].
+/// Returns {p0 = origin UV, p1 = end UV, opposite vertex UV} scaled to texels [0, texSize].
 /// Origin vertex UV, writeFace convention:
 ///   k=0 (ac): origin=a (cornerUV[3f+0]), end=c (cornerUV[3f+2])
 ///   k=1 (cb): origin=c (cornerUV[3f+2]), end=b (cornerUV[3f+1])
@@ -607,7 +630,7 @@ static Rgb bilinearSample(const std::vector<Rgb> &pixels, int texSize, float u, 
 ///   k=1: opposite = a (cornerUV[3f+0])
 ///   k=2: opposite = c (cornerUV[3f+2])
 static std::tuple<math::Vec2f, math::Vec2f, math::Vec2f>
-heUV(decimate::HeIndex he, const std::vector<math::Vec2f> &cornerUV, float ts1) {
+heUV(decimate::HeIndex he, const std::vector<math::Vec2f> &cornerUV, float ts) {
     int f = static_cast<int>(he / 3u);
     int k = static_cast<int>(he % 3u);
 
@@ -624,7 +647,7 @@ heUV(decimate::HeIndex he, const std::vector<math::Vec2f> &cornerUV, float ts1) 
 
     // Corner UVs are in [0,1]; the seam math works in texels.
     auto scale = [&](math::Vec2f uv) {
-        return math::Vec2f { uv.x * ts1, uv.y * ts1 };
+        return math::Vec2f { uv.x * ts, uv.y * ts };
     };
 
     return { scale(cornerUV[3 * f + origIdx]),
@@ -665,7 +688,7 @@ static std::unordered_map<decimate::HeIndex, SeamEdge>
 buildSeamEdges(const decimate::HalfEdgeMesh   &hem,
                const std::vector<math::Vec2f> &cornerUV,
                const std::vector<int>         &faceToChart,
-               float                           ts1) {
+               float                           ts) {
     std::unordered_map<decimate::HeIndex, SeamEdge> seams;
     const auto                                     &hes = hem.halfedges();
 
@@ -688,7 +711,7 @@ buildSeamEdges(const decimate::HalfEdgeMesh   &hem,
         }
 
         // The A side: this half-edge's own atlas edge.
-        auto [p0, p1, opp] = heUV(i, cornerUV, ts1);
+        auto [p0, p1, opp] = heUV(i, cornerUV, ts);
         math::Vec2f inN = inwardNormal2D(p0, p1, opp);
 
         SeamEdge se;
@@ -700,7 +723,7 @@ buildSeamEdges(const decimate::HalfEdgeMesh   &hem,
         // The B side, only across a chart seam: the sym edge runs p1_b -> p0_b in B's atlas
         // (B's p0 matches A's p1, the sym reversal).
         if (isChartSeam) {
-            auto [bp0, bp1, bopp] = heUV(s, cornerUV, ts1);
+            auto [bp0, bp1, bopp] = heUV(s, cornerUV, ts);
             se.bp0 = bp0;
             se.bp1 = bp1;
             se.bInN = inwardNormal2D(bp0, bp1, bopp);
@@ -721,16 +744,16 @@ NormalMap bakeSeamFill(const decimate::MeshData       &low,
                        const std::vector<math::Vec3f> &highNormals,
                        int                             texSize,
                        int                             dilatePasses,
-                       bool                            tangentSpace,
+                       const std::vector<math::Vec4f> &tangents,
                        int                             threads) {
     // Pass 1: the interior bake, without dilation.
-    NormalMap nm = bake(low, lowCornerUV, lowNormals, high, highNormals, texSize, 0, tangentSpace, threads);
+    NormalMap nm = bake(low, lowCornerUV, lowNormals, high, highNormals, texSize, 0, tangents, threads);
 
     // Seam catalog. A mesh edge is a CHART SEAM iff sym(he) != kNoHalfedge AND the two faces' charts
     // differ (same 3D edge, different atlas locations). Idea: Ray et al. 2010 "Invisible Seams"
     // indirection map, NOT the MS patent US10,839,590 polygon-projection mechanism.
-    const float ts1 = static_cast<float>(texSize - 1);
-    auto        seams = buildSeamEdges(hem, lowCornerUV, faceToChart, ts1);
+    const float ts = static_cast<float>(texSize);
+    auto        seams = buildSeamEdges(hem, lowCornerUV, faceToChart, ts);
 
     // No chart seams (single-chart mesh or trivial case): the plain blur dilate is all there is.
     if (seams.empty()) {
@@ -757,7 +780,7 @@ NormalMap bakeSeamFill(const decimate::MeshData       &low,
                 continue; // already filled in pass 1
             }
 
-            math::Vec2f g { static_cast<float>(x), static_cast<float>(y) };
+            math::Vec2f g { static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f };
 
             // Nearest seam edge and the foot parameter on it.
             float           bestDist2 = std::numeric_limits<float>::max();

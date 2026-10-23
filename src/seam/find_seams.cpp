@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <decimate/math/predicates.h>
 #include <decimate/seam/seam_topology.h>
 #include <unordered_map>
 #include <utility>
@@ -99,16 +100,6 @@ static bool uvEdgesMatch(const TexturedMesh &tm, HalfEdgeRef fwd, HalfEdgeRef bw
 }
 
 
-/// Orientation of @p c relative to the line a->b (twice the signed triangle area).
-static double orientation(math::Vec2f a, math::Vec2f b, math::Vec2f c) {
-    const double ax = static_cast<double>(a.x) - static_cast<double>(c.x);
-    const double ay = static_cast<double>(a.y) - static_cast<double>(c.y);
-    const double bx = static_cast<double>(b.x) - static_cast<double>(c.x);
-    const double by = static_cast<double>(b.y) - static_cast<double>(c.y);
-    return ax * by - ay * bx;
-}
-
-
 /// -1, 0 or +1.
 static int signOf(double v) {
     return (v > 0.0) - (v < 0.0);
@@ -121,7 +112,7 @@ static bool isFoldover(const TexturedMesh &tm, HalfEdgeRef fwd, HalfEdgeRef bwd)
     const math::Vec2f b = uvAt(tm, fwd.face, fwd.corner + 1);
     const math::Vec2f c = uvAt(tm, fwd.face, fwd.corner + 2);
     const math::Vec2f d = uvAt(tm, bwd.face, bwd.corner + 2);
-    return signOf(orientation(a, b, c)) == signOf(orientation(a, b, d));
+    return signOf(math::orient2d(a, b, c)) == signOf(math::orient2d(a, b, d));
 }
 
 

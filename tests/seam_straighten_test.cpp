@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <decimate/bake/normal_bake.h>
 #include <decimate/bake/normals.h>
+#include <decimate/math/predicates.h>
 #include <decimate/chart/chart.h>
 #include <decimate/chart/parametrize.h>
 #include <decimate/mesh/half_edge_mesh.h>
@@ -51,13 +52,12 @@ std::size_t idx(int i) {
 }
 
 
-/// Twice the signed UV area of @p face (positive = counter-clockwise, i.e. not flipped).
+/// Twice the signed UV area of @p face (positive = counter-clockwise, i.e. not flipped); the sign is exact.
 double signedArea(const TexturedMesh &tm, std::size_t face) {
     const Vec2f a = tm.uvs[idx(tm.faceU[3 * face])];
     const Vec2f b = tm.uvs[idx(tm.faceU[(3 * face) + 1])];
     const Vec2f c = tm.uvs[idx(tm.faceU[(3 * face) + 2])];
-    return ((static_cast<double>(b.x) - a.x) * (static_cast<double>(c.y) - a.y)) -
-           ((static_cast<double>(b.y) - a.y) * (static_cast<double>(c.x) - a.x));
+    return decimate::math::orient2d(a, b, c);
 }
 
 
@@ -221,7 +221,7 @@ Fixture foldFixture(float wy) {
             fx.mesh.indices.push_back(v);
             const Vec3f p = fx.mesh.positions[idx(v)];
             fx.cornerUV.emplace_back(0.05f + (0.3f * p.x) + (chart == 0 ? 0.0f : 0.5f),
-                                                                0.05f + (0.3f * p.y));
+                                     0.05f + (0.3f * p.y));
         }
     };
 
@@ -503,7 +503,7 @@ void checkErasure(const Pipeline &p, const TexturedMesh &straightened) {
     const auto highN =
         decimate::bake::computeVertexNormals(p.high, decimate::bake::Weighting::EqualUnit);
     const NormalMap map =
-        decimate::bake::bake(p.low, straightened.cornerUV(), lowN, p.high, highN, kTex, 2, false);
+        decimate::bake::bake(p.low, straightened.cornerUV(), lowN, p.high, highN, kTex, 2, {});
     const auto erased =
         decimate::seam::erase(straightened, map, decimate::seam::NormalSpace::Object);
     // 1e-7, not the spec's 1e-8: at the paper's w_seam = 1e10 the seam penalty leaves

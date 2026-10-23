@@ -20,9 +20,9 @@
 ///   └────────────────┴────────────────┘
 ///
 /// Panel ④ tangent decode:
-///   The bake stores normals in the per-face TBN frame: X=snrm·T, Y=snrm·B, Z=snrm·N.
-///   (T=Gram-Schmidt UV-gradient tangent, N=interpolated low normal, B=N×T.)
-///   To reconstruct: decode texture → (dx,dy,dz), then world = dx*T + dy*B + dz*N.
+///   The bake stores normals in the MikkTSpace frame (atlas.tangents: xyz = T, w = sign), the basis
+///   engines decode with. T and N are interpolated unnormalised, B = w * N×T.
+///   To reconstruct: decode texture → (dx,dy,dz), then world = normalize(dx*T + dy*B + dz*N).
 ///   For object-space (bakeTangentSpace=false) the stored normal is in world/object
 ///   space directly — display as-is (mapped to RGB).
 ///
@@ -52,6 +52,7 @@
 #include <decimate/bake/normal_bake.h>
 #include <decimate/bake/normal_map.h>
 #include <decimate/bake/normals.h>
+#include <decimate/bake/tangents.h>
 #include <decimate/chart/parametrize.h>
 #include <decimate/seam/erase.h>
 #include <decimate/seam/straighten.h>
@@ -191,6 +192,7 @@ struct ViewerState {
     struct LodView {
         decimate::MeshData       mesh;         ///< positions + surface indices.
         std::vector<math::Vec2f> uv;           ///< Per-CORNER UV (3*faceCount).
+        std::vector<math::Vec4f> tangents;     ///< MikkTSpace per corner, for the shader's TBN.
         int                      vertices = 0; ///< Achieved vertex count (>= the target).
     };
     /// Panel-4 level of detail, cycled with 'L': 0 = full, 1 = 50%, 2 = 10% of the vertices.
@@ -600,29 +602,26 @@ void main() {
 /// Baked-mesh program (panel ④). Attributes: aPos(0), aNrm(1), aUV(2), aTan(3).
 /// uniform uTangentSpace: 1 = decode TBN, 0 = display object-space normal as RGB.
 ///
-/// TBN decode matches mapFaceRt convention exactly:
-///   Stored in texture: x=dot(snrm,T), y=dot(snrm,B), z=dot(snrm,N)
-///   T = Gram-Schmidt UV-gradient tangent, N = interpolated low normal, B = N×T
-///   Reconstruct: world = dx*T + dy*B + dz*N
-///
-/// Handedness: B = N×T (no hand sign needed; the bake uses the same cross product).
+/// TBN decode is the MikkTSpace pixel-shader convention (the bake encodes with its exact inverse):
+///   T = interpolated corner tangent, N = interpolated low normal (both unnormalised), B = w * N×T
+///   Reconstruct: world = normalize(dx*T + dy*B + dz*N)
 
 static const char *kBakedVS = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNrm;
 layout(location=2) in vec2 aUV;
-layout(location=3) in vec3 aTan;
+layout(location=3) in vec4 aTan;   // xyz = MikkTSpace tangent, w = bitangent sign
 uniform mat4 uMVP;
 uniform mat4 uMV;
 out vec3 vNrm;
-out vec3 vTan;
+out vec4 vTan;
 out vec2 vUV;
 void main() {
     gl_Position = uMVP * vec4(aPos, 1.0);
     mat3 mv3 = mat3(uMV);
     vNrm = mv3 * aNrm;
-    vTan = mv3 * aTan;
+    vTan = vec4(mv3 * aTan.xyz, aTan.w);
     vUV  = aUV;
 }
 )";
@@ -631,7 +630,7 @@ void main() {
 static const char *kBakedFS = R"(
 #version 330 core
 in vec3 vNrm;
-in vec3 vTan;
+in vec4 vTan;
 in vec2 vUV;
 uniform sampler2D uTex;
 uniform bool uTangentSpace;   // true = TBN decode; false = object-space show-as-RGB
@@ -644,12 +643,11 @@ void main() {
 
     vec3 worldNrm;
     if (uTangentSpace) {
-        // Reconstruct TBN in view space (matches mapFaceRt: T=tangent, N=normal, B=N×T).
-        vec3 N = normalize(vNrm);
-        vec3 T = normalize(vTan - dot(vTan, N) * N);  // Gram-Schmidt re-orthogonalise
-        vec3 B = cross(N, T);                          // same as bake: B = N×T
-        // t = (dot(snrm,T), dot(snrm,B), dot(snrm,N)) → reconstruct
-        worldNrm = normalize(t.x * T + t.y * B + t.z * N);
+        // MikkTSpace in view space: interpolated T and N used as they are (no re-orthogonalising),
+        // B = sign * N×T. The bake wrote t with the inverse of exactly this frame.
+        vec3 T = vTan.xyz;
+        vec3 B = (vTan.w < 0.0 ? -1.0 : 1.0) * cross(vNrm, T);
+        worldNrm = normalize(t.x * T + t.y * B + t.z * vNrm);
     } else {
         // Object-space: texture already holds the world normal directly.
         worldNrm = normalize(t);
@@ -751,8 +749,10 @@ static void computeChartification(ViewerState &s) {
     if (s.straighten) {
         printStraighten(a.straightenStats);
     }
-    const int numCharts = static_cast<int>(a.charts.charts.size());
-    const auto ms = [](double sec) { return static_cast<long>(sec * 1000.0); };
+    const int  numCharts = static_cast<int>(a.charts.charts.size());
+    const auto ms = [](double sec) {
+        return static_cast<long>(sec * 1000.0);
+    };
     std::fprintf(stderr, "[chart] %zu faces → %d charts, %zu UVs | hem=%ldms seg=%ldms param=%ldms total=%ldms\n",
                  s.current.indices.size() / 3, numCharts, a.uv.size(), ms(a.hemSeconds), ms(a.segmentSeconds),
                  ms(a.flattenSeconds), ms(a.hemSeconds + a.segmentSeconds + a.flattenSeconds));
@@ -878,6 +878,9 @@ static void computeLods(ViewerState &s) {
         s.lod[i].mesh.positions = res.mesh.positions;
         s.lod[i].mesh.indices = res.mesh.faceV;
         s.lod[i].uv = res.mesh.cornerUV();
+        s.lod[i].tangents = decimate::tangents(s.lod[i].mesh, s.lod[i].uv,
+                                               decimate::bake::computeVertexNormals(s.lod[i].mesh,
+                                                                                    decimate::bake::Weighting::EqualUnit));
         s.lod[i].vertices = static_cast<int>(res.mesh.positions.size());
 
         const auto &st = res.stats;
@@ -1468,24 +1471,20 @@ static std::vector<Vec3f> computeSmoothNormals(const decimate::MeshData &mesh) {
 /// Draw panel ④: chartedMesh textured with the baked normal map, with TBN decode.
 ///
 /// VBO layout: un-indexed (3 distinct vertices per face), interleaved
-///   pos(3) + nrm(3) + uv(2) + tan(3) = 11 floats per corner.
+///   pos(3) + nrm(3) + uv(2) + tan(4) = 12 floats per corner.
 ///
-/// aTan carries the per-FACE tangent (exact mapFaceRt formula, constant over the
-/// triangle), replicated to all 3 corners.  Per-vertex averaging is intentionally
-/// NOT used: at a chart seam a shared vertex belongs to multiple charts with
-/// different per-corner UVs, so averaging cancels/garbles the tangent → noisy TBN.
-/// Carrying the per-face constant means T is C0 (not C1) across triangle boundaries,
-/// but the shader's Gram-Schmidt re-orthogonalises against the interpolated N anyway,
-/// so the decode is smooth everywhere the bake is smooth.
+/// aTan is the per-corner MikkTSpace tangent (xyz + sign) from `tangents`, the same array the bake
+/// encoded with, so the shader's decode inverts it exactly.
 ///
 /// aNrm carries the smooth (accumulated) vertex normal so the shader interpolates N
 /// continuously — matching the bake's lowNormals interpolation per texel.
-// NOLINTNEXTLINE(readability-function-size): builds the un-indexed VBO with 11-component interleaved data
+// NOLINTNEXTLINE(readability-function-size): builds the un-indexed VBO with 12-component interleaved data
 static void drawBakedMesh(const Programs &prog,
                           const GlMat4 &mvp, const GlMat4 &mv,
                           const ViewerState              &s,
                           const decimate::MeshData       &mesh,
-                          const std::vector<math::Vec2f> &cornerUV) {
+                          const std::vector<math::Vec2f> &cornerUV,
+                          const std::vector<math::Vec4f> &tangents) {
     if (!s.baked || s.bakedTex == 0) {
         return;
     }
@@ -1498,10 +1497,9 @@ static void drawBakedMesh(const Programs &prog,
     // Smooth vertex normals — matches the bake's lowNormals per-texel interpolation.
     const std::vector<Vec3f> smoothN = computeSmoothNormals(mesh);
 
-    // Build un-indexed VBO: pos(3) + nrm(3) + uv(2) + tan(3) = 11 floats
-    // Per-face tangent (constant over the triangle, replicated to all 3 corners).
+    // Build un-indexed VBO: pos(3) + nrm(3) + uv(2) + tan(4) = 12 floats
     std::vector<float> buf;
-    buf.reserve(numTris * 3 * 11);
+    buf.reserve(numTris * 3 * 12);
 
     for (std::size_t t = 0; t < numTris; ++t) {
         const int ia = idx[t * 3 + 0];
@@ -1512,39 +1510,12 @@ static void drawBakedMesh(const Programs &prog,
             continue;
         }
         // Fewer corner UVs than faces (stale atlas): skip rather than index past `cornerUV`.
-        if (3 * t + 2 >= cornerUV.size()) {
+        if (3 * t + 2 >= cornerUV.size() || 3 * t + 2 >= tangents.size()) {
             continue;
         }
 
-        const auto &pa = pos[static_cast<std::size_t>(ia)];
-        const auto &pb = pos[static_cast<std::size_t>(ib)];
-        const auto &pc = pos[static_cast<std::size_t>(ic)];
-
-        // Per-face tangent: exact mapFaceRt formula using THIS face's per-corner UVs.
-        // T = (pb-pa)*(dv2/det) - (pc-pa)*(dv1/det)
-        // Degenerate UV (|det| < 1e-12 or |tFace| ≈ 0): fall back to an
-        // N-orthogonal vector so the shader doesn't divide by zero.
-        const auto &uA = cornerUV[3 * t + 0];
-        const auto &uB = cornerUV[3 * t + 1];
-        const auto &uC = cornerUV[3 * t + 2];
-        const float du1 = uB.x - uA.x, dv1 = uB.y - uA.y;
-        const float du2 = uC.x - uA.x, dv2 = uC.y - uA.y;
-        const float det = du1 * dv2 - du2 * dv1;
-
-        Vec3f tFace { 1.0f, 0.0f, 0.0f }; // fallback
-        if (std::fabs(det) > 1e-12f) {
-            const float r = 1.0f / det;
-            const float tx = (pb.x - pa.x) * (dv2 * r) - (pc.x - pa.x) * (dv1 * r);
-            const float ty = (pb.y - pa.y) * (dv2 * r) - (pc.y - pa.y) * (dv1 * r);
-            const float tz = (pb.z - pa.z) * (dv2 * r) - (pc.z - pa.z) * (dv1 * r);
-            const float tlen = std::sqrt(tx * tx + ty * ty + tz * tz);
-            if (tlen > 1e-8f) {
-                tFace = { tx / tlen, ty / tlen, tz / tlen };
-            }
-        }
-
-        // Un-indexed corners: position and smooth normal per vertex, UV per face corner (seam vertices
-        // carry different UVs per chart), and the face-constant tangent.
+        // Un-indexed corners: position and smooth normal per vertex, UV and tangent per face corner
+        // (seam vertices carry different UVs per chart).
         struct Corner {
             int vi;
             int k;
@@ -1562,9 +1533,11 @@ static void drawBakedMesh(const Programs &prog,
             buf.push_back(n.z);
             buf.push_back(uvc.x);
             buf.push_back(uvc.y);
-            buf.push_back(tFace.x);
-            buf.push_back(tFace.y);
-            buf.push_back(tFace.z);
+            const auto &tg = tangents[3 * t + static_cast<std::size_t>(k)];
+            buf.push_back(tg.x);
+            buf.push_back(tg.y);
+            buf.push_back(tg.z);
+            buf.push_back(tg.w);
         }
     }
 
@@ -1572,7 +1545,7 @@ static void drawBakedMesh(const Programs &prog,
         return;
     }
 
-    const int stride = 11;
+    const int stride = 12;
     const int vertCount = static_cast<int>(buf.size()) / stride;
     const int sBytes = stride * static_cast<int>(sizeof(float));
 
@@ -1598,9 +1571,9 @@ static void drawBakedMesh(const Programs &prog,
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sBytes,
                           // NOLINTNEXTLINE(performance-no-int-to-ptr)
                           reinterpret_cast<const void *>(6 * sizeof(float)));
-    // aTan @ 3 (3 floats, offset 8)
+    // aTan @ 3 (4 floats, offset 8)
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sBytes,
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sBytes,
                           // NOLINTNEXTLINE(performance-no-int-to-ptr)
                           reinterpret_cast<const void *>(8 * sizeof(float)));
 
@@ -1778,9 +1751,9 @@ static void renderBakedPanel(const Programs &prog, const ViewerState &s,
         const bool  lod = s.lodLevel > 0 && s.lodValid;
         const auto &view = s.lod[static_cast<std::size_t>(std::max(s.lodLevel, 1) - 1)];
         if (lod) {
-            drawBakedMesh(prog, cam.mvp, cam.mv, s, view.mesh, view.uv);
+            drawBakedMesh(prog, cam.mvp, cam.mv, s, view.mesh, view.uv, view.tangents);
         } else {
-            drawBakedMesh(prog, cam.mvp, cam.mv, s, s.atlas.mesh, s.atlas.uv);
+            drawBakedMesh(prog, cam.mvp, cam.mv, s, s.atlas.mesh, s.atlas.uv, s.atlas.tangents);
         }
     } else {
         drawFaceNormalColors(prog, cam.mvp, cam.mv, s.current);
@@ -2556,6 +2529,7 @@ static int runShots(const Programs &prog, ViewerState &s, const ShotOptions &opt
     for (int i = 0; i < 4; ++i) {
         decimateStep(s);
     }
+    s.bakeTangentSpace = opt.tangent;
     computeChartification(s); // also bakes (seam-fill)
     if (!s.charted || !s.baked) {
         std::fprintf(stderr, "[shot] chartify/bake failed\n");

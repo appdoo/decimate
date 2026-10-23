@@ -175,9 +175,9 @@ TEST_CASE("N3: a zero-UV-area face does not overwrite a valid chart's texels in 
     const BakeFixture dirty(true);
 
     const auto expected = decimate::bake::bake(clean.low, clean.cornerUV, clean.normals, clean.low,
-                                               clean.normals, BakeFixture::kTex, 0, false, 1);
+                                               clean.normals, BakeFixture::kTex, 0, {}, 1);
     const auto actual = decimate::bake::bake(dirty.low, dirty.cornerUV, dirty.normals, dirty.low,
-                                             dirty.normals, BakeFixture::kTex, 0, false, 1);
+                                             dirty.normals, BakeFixture::kTex, 0, {}, 1);
 
     REQUIRE(actual.pixels.size() == expected.pixels.size());
     int differing = 0;

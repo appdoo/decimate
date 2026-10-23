@@ -267,7 +267,7 @@ SpotPipeline buildSpot() {
     s.cornerUV = decimate::chart::parametrizeCorners(hem, s.low, charts, kTex);
     s.lowN = decimate::bake::computeVertexNormals(s.low, decimate::bake::Weighting::EqualUnit);
     s.highN = decimate::bake::computeVertexNormals(s.high, decimate::bake::Weighting::EqualUnit);
-    s.dilateMap = decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, kTex, 2, false);
+    s.dilateMap = decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, kTex, 2, {});
     s.tm = decimate::seam::weld(s.low, s.cornerUV);
     return s;
 }
@@ -608,12 +608,12 @@ TEST_CASE("S6: toggle off -- bake and bakeSeamFill outputs do not depend on eras
     // this spec (the bake_characterization / seam_bake_test goldens keep guarding them).
     const SpotPipeline &s = spot();
     const NormalMap     before =
-        decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, 256, 2, false);
+        decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, 256, 2, {});
     CHECK(sameMap(before, s.dilateMap));
 
     (void)decimate::seam::erase(s.tm, s.dilateMap, NormalSpace::Object);
     const NormalMap after =
-        decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, 256, 2, false);
+        decimate::bake::bake(s.low, s.cornerUV, s.lowN, s.high, s.highN, 256, 2, {});
     CHECK(sameMap(after, before));
 }
 

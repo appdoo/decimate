@@ -35,8 +35,8 @@ TEST_CASE("I2 dense: BVH bake == brute-force bake (bunny, horse)", "[bake][bvh][
     for (const char *name : { "bunny.iv", "horse.iv" }) {
         const Pipeline    p = buildPipeline(modelOrSkip(name), 1500, 64, 256);
         const BruteTracer oracle(p.high);
-        const auto        want = detail::bakeWith(oracle, p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, 0);
-        const auto        got = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false);
+        const auto        want = detail::bakeWith(oracle, p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, 0);
+        const auto        got = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {});
         INFO(name);
         REQUIRE(samePixels(got, want));
     }

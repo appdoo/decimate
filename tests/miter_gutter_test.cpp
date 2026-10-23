@@ -23,6 +23,7 @@
 
 #include <decimate/chart/chart.h>
 #include <decimate/chart/parametrize.h>
+#include <decimate/math/predicates.h>
 #include <decimate/mesh/half_edge_mesh.h>
 #include <decimate/types/mesh_data.h>
 #include <decimate/types/mesh_types.h>
@@ -44,13 +45,11 @@ constexpr float kEps = 1e-4f;
 
 /// Signed polygon area (positive for counter-clockwise).
 float signedArea(const std::vector<Tex2> &p) {
-    float a2 = 0.0f;
-    for (std::size_t i = 0; i < p.size(); ++i) {
-        const Tex2 &a = p[i];
-        const Tex2 &b = p[(i + 1) % p.size()];
-        a2 += a.u * b.v - b.u * a.v;
+    std::vector<Vec2f> q;
+    for (const Tex2 &t : p) {
+        q.push_back({ t.u, t.v });
     }
-    return 0.5f * a2;
+    return static_cast<float>(0.5 * decimate::math::signedArea2(q));
 }
 
 

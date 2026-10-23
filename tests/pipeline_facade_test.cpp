@@ -3,8 +3,8 @@
 /// @brief Spec 25: `chartify` + `bakeAtlas` are the viewer's hand-assembled pipeline, moved.
 ///
 /// a [I] cow, viewer settings: facade uv and map bytes == the hand-assembled sequence, 3 gutters x 2 spaces + Seamless
-/// b [S] Seamless: object space -> Erased with D_total < 1e-8; tangent space -> SeamFill
-/// c [S] Erased in tangent space -> SeamFill, reported in gutterUsed
+/// b [S] Seamless: Erased in both spaces, object D_total < 1e-8
+/// c [S] Erased in tangent space is built frame-aware (Spec 28), reported in gutterUsed
 /// d [S] library default = 2003: charts == segment(64), plain flatten, no cuts
 
 #include "model_fixture.h"
@@ -41,7 +41,7 @@ const Atlas &viewerAtlas() {
 
 
 /// The viewer's makeGutterMap, copied from before the move (SeamFill / dilate / erase on top of dilate).
-bake::NormalMap handBake(const Atlas &a, const MeshData &high, Gutter g, bool tangent) {
+bake::NormalMap handBake(const Atlas &a, const MeshData &high, Gutter g, const std::vector<math::Vec4f> &tangent) {
     const auto lowN = bake::computeVertexNormals(a.mesh, bake::Weighting::EqualUnit);
     const auto highN = bake::computeVertexNormals(high, bake::Weighting::EqualUnit);
     if (g == Gutter::SeamFill) {
@@ -49,7 +49,11 @@ bake::NormalMap handBake(const Atlas &a, const MeshData &high, Gutter g, bool ta
     }
     auto map = bake::bake(a.mesh, a.uv, lowN, high, highN, 256, 2, tangent);
     if (g == Gutter::Erased) {
-        return seam::erase(seam::weld(a.mesh, a.uv), map, seam::NormalSpace::Object).map;
+        const auto tm = seam::weld(a.mesh, a.uv);
+        if (tangent.empty()) {
+            return seam::erase(tm, map, seam::NormalSpace::Object).map;
+        }
+        return seam::erase(tm, map, seam::TangentFrames { tangent, lowN }).map;
     }
     return map;
 }
@@ -85,17 +89,19 @@ TEST_CASE("a: facade equals the hand-assembled viewer path on the cow", "[pipeli
         { Gutter::SeamFill, Gutter::SeamFill, BakeSpace::Object },
         { Gutter::SeamFill, Gutter::SeamFill, BakeSpace::Tangent },
         { Gutter::Erased, Gutter::Erased, BakeSpace::Object },
-        { Gutter::Erased, Gutter::SeamFill, BakeSpace::Tangent },
+        { Gutter::Erased, Gutter::Erased, BakeSpace::Tangent },
         { Gutter::Seamless, Gutter::Erased, BakeSpace::Object },
-        { Gutter::Seamless, Gutter::SeamFill, BakeSpace::Tangent },
+        { Gutter::Seamless, Gutter::Erased, BakeSpace::Tangent },
     };
+    // Spec 26: chartify fills one MikkTSpace tangent per corner (empty would silently bake object space).
+    REQUIRE(a.tangents.size() == a.uv.size());
     for (const Row &r : rows) {
         BakeOptions opt;
         opt.space = r.space;
         opt.gutter = r.requested;
         const BakeResult res = bakeAtlas(a, cow(), opt);
         CHECK(res.gutterUsed == r.built);
-        CHECK(sameMap(res.map, handBake(a, cow(), r.built, r.space == BakeSpace::Tangent)));
+        CHECK(sameMap(res.map, handBake(a, cow(), r.built, r.space == BakeSpace::Tangent ? a.tangents : std::vector<math::Vec4f> {})));
     }
 }
 
@@ -112,17 +118,20 @@ TEST_CASE("b: Seamless picks the gutter that hides the seams per space", "[pipel
 
     BakeOptions tangent;
     tangent.space = BakeSpace::Tangent;
-    CHECK(bakeAtlas(a, cow(), tangent).gutterUsed == Gutter::SeamFill);
+    const BakeResult t = bakeAtlas(a, cow(), tangent);
+    CHECK(t.gutterUsed == Gutter::Erased);
+    CHECK(t.dTotal[0] + t.dTotal[1] + t.dTotal[2] < 1e-8);
 }
 
 
-TEST_CASE("c: Erased in tangent space falls back to SeamFill and says so", "[pipeline][state]") {
+TEST_CASE("c: Erased in tangent space is frame-aware and says so", "[pipeline][state]") {
     BakeOptions opt;
     opt.space = BakeSpace::Tangent;
     opt.gutter = Gutter::Erased;
     const BakeResult r = bakeAtlas(viewerAtlas(), cow(), opt);
-    CHECK(r.gutterUsed == Gutter::SeamFill);
-    CHECK(r.unknownTexels == 0);
+    CHECK(r.gutterUsed == Gutter::Erased);
+    CHECK(r.unknownTexels > 0);
+    CHECK(r.rescale >= 0.7);
 }
 
 

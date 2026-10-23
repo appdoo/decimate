@@ -8,6 +8,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <decimate/bake/tangents.h>
+
 #include <chrono>
 #include <cstdio>
 
@@ -166,7 +168,7 @@ TEST_CASE("S6 empty high mesh: every query misses, the bake falls back to the lo
     low.indices = { 0, 1, 2 };
     const std::vector<decimate::math::Vec2f> uv = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, 1.0f } };
     const std::vector<Vec3>                  n(3, Vec3 { 0, 0, 1 });
-    const NormalMap                          nm = decimate::bake::bake(low, uv, n, empty, {}, 16, 0, false);
+    const NormalMap                          nm = decimate::bake::bake(low, uv, n, empty, {}, 16, 0, {});
     REQUIRE(nm.pixels[2 * 16 + 2] == Rgb { 127, 127, 254 });
 }
 
@@ -179,7 +181,7 @@ TEST_CASE("S7 overlapping UV triangles: face 1 owns the shared texels", "[bake][
     const std::vector<Vec3>                  n = { { 0, 0, 1 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 }, { 1, 0, 0 } };
     const MeshData                           none;
     for (const int threads : { 1, 0 }) {
-        const NormalMap nm = decimate::bake::bake(low, uv, n, none, {}, 32, 0, false, threads);
+        const NormalMap nm = decimate::bake::bake(low, uv, n, none, {}, 32, 0, {}, threads);
         int             covered = 0;
         for (const Rgb &p : nm.pixels) {
             if (p == Rgb { 128, 128, 128 }) {
@@ -229,9 +231,10 @@ TEST_CASE("I3 cow: BVH == brute on the real bake rays (texel origins + normals)"
 }
 
 TEST_CASE("I1 cow: BVH bake == brute-force bake, both tangent modes", "[bake][bvh][I1]") {
-    const Pipeline    p = cowPipeline();
-    const BruteTracer oracle(p.high);
-    for (const bool tangent : { false, true }) {
+    const Pipeline                           p = cowPipeline();
+    const BruteTracer                        oracle(p.high);
+    const std::vector<decimate::math::Vec4f> mikk = decimate::tangents(p.low, p.cornerUV, p.lowN);
+    for (const auto &tangent : { std::vector<decimate::math::Vec4f> {}, mikk }) {
         const NormalMap want = detail::bakeWith(oracle, p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, tangent, 1);
         const NormalMap got = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, tangent);
         REQUIRE(want.pixels.size() == 65536);
@@ -242,17 +245,17 @@ TEST_CASE("I1 cow: BVH bake == brute-force bake, both tangent modes", "[bake][bv
 TEST_CASE("I4 cow: bakeSeamFill is thread-count independent", "[bake][bvh][I4]") {
     const Pipeline  p = cowPipeline();
     const NormalMap a = decimate::bake::bakeSeamFill(p.low, p.hem, p.cornerUV, p.faceToChart, p.lowN, p.high, p.highN,
-                                                     256, 2, false, 1);
+                                                     256, 2, {}, 1);
     const NormalMap b = decimate::bake::bakeSeamFill(p.low, p.hem, p.cornerUV, p.faceToChart, p.lowN, p.high, p.highN,
-                                                     256, 2, false, 0);
+                                                     256, 2, {}, 0);
     REQUIRE(samePixels(a, b));
 }
 
 TEST_CASE("B1 cow: bake is byte-identical for threads 1, 2, 3, 7, 0", "[bake][bvh][B1]") {
     const Pipeline  p = cowPipeline();
-    const NormalMap serial = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, 1);
+    const NormalMap serial = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, 1);
     for (const int threads : { 2, 3, 7, 0 }) {
-        const NormalMap par = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, threads);
+        const NormalMap par = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, threads);
         REQUIRE(samePixels(par, serial));
     }
 }
@@ -269,11 +272,11 @@ TEST_CASE("bake timing: brute vs BVH vs BVH+threads", "[.bench]") {
         const rtrace::TriangleBvh bvh(p.high);
         const auto                t1 = Clock::now();
         const BruteTracer         oracle(p.high);
-        const NormalMap           ref = detail::bakeWith(oracle, p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, 1);
+        const NormalMap           ref = detail::bakeWith(oracle, p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, 1);
         const auto                t2 = Clock::now();
-        const NormalMap           one = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, 1);
+        const NormalMap           one = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, 1);
         const auto                t3 = Clock::now();
-        const NormalMap           all = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, false, 0);
+        const NormalMap           all = decimate::bake::bake(p.low, p.cornerUV, p.lowN, p.high, p.highN, 256, 0, {}, 0);
         const auto                t4 = Clock::now();
         std::printf("[bench] %-9s faces=%zu  bvh-build %.1f ms | brute %.3f s | bvh x1 %.3f s | bvh xN %.3f s | equal=%d\n",
                     name, p.high.indices.size() / 3, 1000.0 * sec(t0, t1), sec(t1, t2), sec(t2, t3), sec(t3, t4),

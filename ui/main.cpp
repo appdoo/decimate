@@ -5,7 +5,7 @@
 /// Usage:
 ///   mesh-viewer [path.obj|path.iv]
 ///   mesh-viewer --frames N [path.obj]   headless smoke: render N frames, exit 0
-///   mesh-viewer --shot <outdir> [--shot-size WxH] [--straighten] [path]   write each panel as a TGA, exit 0
+///   mesh-viewer --shot <outdir> [--shot-size WxH] [--straighten] [--tangent] [path]   write each panel as a TGA, exit 0
 ///   mesh-viewer --max-charts N          segmenter chart cap (default 16; 1 while the stretch bound is on)
 ///   mesh-viewer --max-stretch L2[,Linf] per-chart stretch bound (default off; 0 = off): over-bound charts are cut open (Gu 2002)
 ///
@@ -75,6 +75,8 @@ int main(int argc, char *argv[]) {
                 std::fprintf(stderr, "mesh-viewer: --max-stretch expects L2[,Linf] (>= 0, 0 = off)\n");
                 return 2;
             }
+        } else if (std::strcmp(argv[i], "--tangent") == 0) {
+            shot.tangent = true;
         } else if (std::strcmp(argv[i], "--straighten") == 0) {
             shot.straighten = true;
         } else if (std::strcmp(argv[i], "--shot-size") == 0 && i + 1 < argc) {

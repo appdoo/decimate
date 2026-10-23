@@ -8,6 +8,7 @@
 
 #include <decimate/seam/seam_topology.h>
 #include <decimate/types/textured_mesh.h>
+#include <span>
 #include <vector>
 
 namespace decimate::seam::detail {

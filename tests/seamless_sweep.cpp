@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <decimate/bake/normal_bake.h>
 #include <decimate/bake/normals.h>
+#include <decimate/bake/tangents.h>
 #include <decimate/chart/chart.h>
 #include <decimate/chart/parametrize.h>
 #include <decimate/mesh/half_edge_mesh.h>
@@ -206,17 +207,26 @@ void emitAtlasRows(std::FILE *out, const Atlas &a, const Row &key) {
 }
 
 
+/// MikkTSpace tangents of the straightened atlas, or none for object space.
+std::vector<decimate::math::Vec4f> tangentsFor(const Atlas &a, bool tangent) {
+    if (!tangent) {
+        return {};
+    }
+    return decimate::tangents(a.low, a.straightened.cornerUV(), a.lowNormals);
+}
+
+
 /// Normal map with blur dilation (2 passes) on the straightened atlas.
 NormalMap bakeDilate(const Atlas &a, int texSize, bool tangent) {
     return decimate::bake::bake(a.low, a.straightened.cornerUV(), a.lowNormals, a.high,
-                                a.highNormals, texSize, 2, tangent);
+                                a.highNormals, texSize, 2, tangentsFor(a, tangent));
 }
 
 
 /// Normal map with seam-correct gutter fill (2 passes) on the straightened atlas.
 NormalMap bakeFill(const Atlas &a, int texSize, bool tangent) {
     return decimate::bake::bakeSeamFill(a.low, a.hem, a.straightened.cornerUV(), a.faceToChart,
-                                        a.lowNormals, a.high, a.highNormals, texSize, 2, tangent);
+                                        a.lowNormals, a.high, a.highNormals, texSize, 2, tangentsFor(a, tangent));
 }
 
 

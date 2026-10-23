@@ -48,6 +48,7 @@
 
 #include <decimate/math/vec2.h>
 #include <decimate/math/vec3.h>
+#include <decimate/math/vec4.h>
 #include <decimate/mesh/half_edge_mesh.h>
 #include <decimate/types/mesh_data.h>
 #include <decimate/bake/normal_map.h>
@@ -75,7 +76,11 @@ namespace decimate::bake {
 ///                     (`bakeSeamFill`) replaces dilate at chart edges. When > 0 the atlas packer must
 ///                     reserve matching clearance, else skirts bleed between
 ///                     charts (see packAtlas's gutter).
-/// @param tangentSpace Store normals in the per-texel tangent frame instead of object space.
+/// @param tangents     Empty: object space. Else the per-corner MikkTSpace tangents of `low`
+///                     (`decimate::tangents`, size `3*faceCount`, built from the same `lowNormals` and
+///                     `lowCornerUV`): normals are stored in that frame, the basis every engine decodes with
+///                     (`x*T + y*B + z*N`, T and N interpolated unnormalised, `B = w*cross(N,T)`).
+///                     Faces without a basis store the flat normal (0,0,1).
 /// @param threads      Worker threads for the shading phase: 0 = all cores, 1 = serial on the
 ///                     caller's thread, n = up to n workers. The output never depends on it.
 ///                     Builds with `DECIMATE_THREADS=OFF` always run one worker.
@@ -85,6 +90,7 @@ namespace decimate::bake {
 /// @pre `lowCornerUV.size() == 3 * (low.indices.size() / 3)`.
 /// @pre `lowNormals.size()  == low.positions.size()`.
 /// @pre `highNormals.size() == high.positions.size()`.
+/// @pre `tangents.empty() || tangents.size() == lowCornerUV.size()`.
 [[nodiscard]] NormalMap bake(const decimate::MeshData       &low,
                              const std::vector<math::Vec2f> &lowCornerUV,
                              const std::vector<math::Vec3f> &lowNormals,
@@ -92,7 +98,7 @@ namespace decimate::bake {
                              const std::vector<math::Vec3f> &highNormals,
                              int                             texSize,
                              int                             dilatePasses = 0,
-                             bool                            tangentSpace = false,
+                             const std::vector<math::Vec4f> &tangents = {},
                              int                             threads = 0);
 
 /// @brief Bake + seam-correct gutter fill (2-pass, cross-chart sampling).
@@ -127,7 +133,7 @@ namespace decimate::bake {
 /// @param highNormals  Per-vertex normals on the high mesh.
 /// @param texSize      Texture resolution.
 /// @param dilatePasses Blur-dilate passes applied after seam fill (open edges).
-/// @param tangentSpace As in `bake()`.
+/// @param tangents     As in `bake()`.
 /// @param threads      As in `bake()`; applies to pass 1 (pass 2 is serial).
 /// @returns            NormalMap with seam-correct gutter.
 ///
@@ -143,7 +149,7 @@ namespace decimate::bake {
     const std::vector<math::Vec3f> &highNormals,
     int                             texSize,
     int                             dilatePasses = 2,
-    bool                            tangentSpace = false,
+    const std::vector<math::Vec4f> &tangents = {},
     int                             threads = 0);
 
 } // namespace decimate::bake

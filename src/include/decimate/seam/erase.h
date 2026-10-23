@@ -13,8 +13,14 @@
 ///
 /// ## Contract
 ///
-/// - **Object-space normal maps only** (paper footnote 3): a tangent-space seam is not
-///   well-defined, so `NormalSpace::Tangent` throws `std::invalid_argument`.
+/// - **Object space:** the map is the world normal; matching texels is matching normals.
+/// - **Tangent space** (the `TangentFrames` overload): equal texels are NOT equal normals, because
+///   each side decodes with its own frame `F = [T | w N x T | N]` (paper footnote 3 leaves this
+///   open).  The frames enter the mismatch: `D = sum_e (L_e/L) int |F_A s_A - F_B s_B|^2`, solved as
+///   one coupled 3n system.  Equal unnormalised vectors imply equal normals.  The solution may
+///   leave [-1, 1] (only the direction is fixed), so it is scaled by `EraseResult::rescale`.
+///   Texels are the signed engine decode `byte / 127 - 1`.
+/// - `NormalSpace::Tangent` on the frame-less overload throws `std::invalid_argument`.
 /// - **GPU sampling convention:** texel coordinate = `uv * N - 0.5`, clamp-to-edge
 ///   (see seam_energy.h).  The erasure is exact in what a GL_LINEAR sampler fetches.
 /// - **Units:** the solve runs in double on texels in [0,1] (byte / 255).
@@ -34,7 +40,10 @@
 
 #include <array>
 #include <decimate/bake/normal_map.h>
+#include <decimate/math/vec3.h>
+#include <decimate/math/vec4.h>
 #include <decimate/types/textured_mesh.h>
+#include <span>
 #include <vector>
 
 namespace decimate::seam {
@@ -62,6 +71,7 @@ struct EraseResult {
     std::array<double, 3> dBefore {};        ///< D_total of the input, per channel.
     std::array<double, 3> dAfter {};         ///< D_total of `texels`, per channel.
     int                   unknownTexels = 0; ///< Texels that took part in the solve.
+    double                rescale = 1.0;     ///< Tangent space: factor applied to the solution to keep it in [-1, 1].
 };
 
 
@@ -77,5 +87,21 @@ struct EraseResult {
 /// @throws std::runtime_error if the linear system cannot be factorized.
 [[nodiscard]] EraseResult erase(const TexturedMesh &tm, const bake::NormalMap &map,
                                 NormalSpace space, const EraseOptions &options = {});
+
+
+/// @brief The frames a tangent-space map is decoded with.
+struct TangentFrames {
+    std::span<const math::Vec4f> tangents; ///< 3 per face: T (xyz) and handedness w, parallel to `tm.faceV`.
+    std::span<const math::Vec3f> normals;  ///< One per surface vertex (`tm.faceV` indexes it).
+};
+
+
+/// @brief Erase the texture seams of a tangent-space @p map (frame-aware, see the contract above).
+///
+/// `dBefore`/`dAfter` are the framed mismatch per world component, normalised like the object-space D.
+/// @throws std::invalid_argument if @p frames does not match @p tm or @p map is malformed.
+/// @throws std::runtime_error if the linear system cannot be factorized.
+[[nodiscard]] EraseResult erase(const TexturedMesh &tm, const bake::NormalMap &map,
+                                const TangentFrames &frames, const EraseOptions &options = {});
 
 } // namespace decimate::seam
